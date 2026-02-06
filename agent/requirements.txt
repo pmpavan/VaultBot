@@ -1,0 +1,11 @@
+# VaultBot Agent - Python Dependencies
+# Story: 1.3 - Payload Parser & Classification
+
+# Supabase client for database operations
+supabase==2.3.4
+
+# Twilio for WhatsApp notifications
+twilio==9.0.0
+
+# Python dotenv for environment variables
+python-dotenv==1.0.1

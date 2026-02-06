@@ -1,0 +1,9 @@
+{
+    "imports": {
+        "@supabase/supabase-js": "jsr:@supabase/supabase-js@2",
+        "twilio": "https://esm.sh/twilio@4.23.0"
+    },
+    "workspace": [
+        "./supabase/functions/webhook-handler"
+    ]
+}

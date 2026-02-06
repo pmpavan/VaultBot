@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "lib": [
+      "deno.ns",
+      "deno.window",
+      "dom"
+    ],
+    "module": "esnext"
+  },
+  "tasks": {
+    "start": "deno run --allow-net --allow-env index.ts"
+  },
+  "imports": {
+    "twilio": "https://esm.sh/twilio@4.23.0",
+    "@supabase/supabase-js": "jsr:@supabase/supabase-js@2"
+  }
+}
