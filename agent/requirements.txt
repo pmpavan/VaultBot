@@ -2,10 +2,13 @@
 # Story: 1.3 - Payload Parser & Classification
 
 # Supabase client for database operations
-supabase==2.3.4
+supabase==2.12.0
 
-# Twilio for WhatsApp notifications
-twilio==9.0.0
+# Twilio for WhatsApp notifications (updated from yanked 9.0.0)
+twilio>=9.3.6
 
 # Python dotenv for environment variables
 python-dotenv==1.0.1
+
+# Tenacity for retry logic
+tenacity==8.2.3

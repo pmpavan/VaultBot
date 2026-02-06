@@ -6,6 +6,65 @@ const { validateRequest } = twilio;
 
 console.log("Hello from Functions!");
 
+/**
+ * Get or create a user profile based on phone number.
+ * If user exists, returns existing user_id.
+ * If user doesn't exist, creates new user with ProfileName as first_name.
+ * 
+ * @param supabase - Supabase client instance
+ * @param phoneNumber - User's phone number (primary key)
+ * @param profileName - WhatsApp profile name (defaults to "Unknown")
+ * @returns phone_number (which is the user_id/PK)
+ */
+async function getOrCreateUser(
+    supabase: any,
+    phoneNumber: string,
+    profileName: string
+): Promise<string> {
+    // 1. Try to get existing user
+    const { data: existingUser, error: selectError } = await supabase
+        .from('users')
+        .select('phone_number')
+        .eq('phone_number', phoneNumber)
+        .maybeSingle();  // Use maybeSingle to avoid error on no results
+
+    if (selectError) {
+        console.error("Error checking for existing user:", selectError);
+        throw new Error(`User lookup failed: ${selectError.message}`);
+    }
+
+    if (existingUser) {
+        console.log(`Existing user found: ${phoneNumber}`);
+        return phoneNumber;
+    }
+
+    // 2. Create new user
+    const firstName = profileName || 'Unknown';
+    console.log(`Creating new user: ${phoneNumber} (${firstName})`);
+
+    const { data: newUser, error: insertError } = await supabase
+        .from('users')
+        .insert({
+            phone_number: phoneNumber,
+            first_name: firstName
+        })
+        .select('phone_number')
+        .single();
+
+    if (insertError) {
+        // Handle race condition: if another request created the user simultaneously
+        if (insertError.code === '23505') {  // Unique violation
+            console.log(`User ${phoneNumber} was created by concurrent request`);
+            return phoneNumber;
+        }
+        console.error("Error creating user:", insertError);
+        throw new Error(`User creation failed: ${insertError.message}`);
+    }
+
+    console.log(`New user created: ${newUser.phone_number}`);
+    return newUser.phone_number;
+}
+
 export const webhookHandler = async (req: Request): Promise<Response> => {
     try {
         const url = req.url;
@@ -103,12 +162,17 @@ export const webhookHandler = async (req: Request): Promise<Response> => {
 
         console.log(`Inserting Job: [${sourceType}] from ${userPhone} in channel ${sourceChannelId}`);
 
+        // 3.5. Get or Create User Profile
+        const profileName = body["ProfileName"] || "Unknown";
+        const userId = await getOrCreateUser(supabase, userPhone, profileName);
+        console.log(`User resolved: ${userId} (${profileName})`);
+
         const { data: jobData, error: jobError } = await supabase
             .from('jobs')
             .insert({
                 source_channel_id: sourceChannelId,
                 source_type: sourceType,
-                user_phone: userPhone,
+                user_id: userId,  // Add user_id FK
                 payload: body,
                 status: 'pending'
             })

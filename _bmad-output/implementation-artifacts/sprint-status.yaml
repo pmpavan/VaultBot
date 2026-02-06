@@ -44,8 +44,8 @@ development_status:
   epic-1: in-progress
   1-1-webhook-ingestion-privacy-gate: done
   1-2-job-queue-schema: done
-  1-3-payload-parser-classification: review
-  1-4-automatic-user-profile-creation: backlog
+  1-3-payload-parser-classification: done
+  1-4-automatic-user-profile-creation: done
   1-5-dead-letter-queue-dlq: backlog
   epic-1-retrospective: optional
 

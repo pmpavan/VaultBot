@@ -12,8 +12,11 @@ import os
 import sys
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Load environment variables from .env.local (for local testing)
+# Falls back to .env if .env.local doesn't exist
+load_dotenv('.env.local')
+if not os.environ.get('SUPABASE_URL'):
+    load_dotenv()  # Fallback to .env
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
@@ -35,46 +38,62 @@ def create_test_job(payload_type='youtube'):
     
     supabase = get_supabase_client()
     
+    test_phone = '+1234567890'
+    
+    # Ensure test user exists
+    try:
+        supabase.table('users').insert({
+            'phone_number': test_phone,
+            'first_name': 'Test User'
+        }).execute()
+        print(f"✅ Created test user: {test_phone}")
+    except Exception as e:
+        # User might already exist, that's fine
+        print(f"ℹ️  Test user already exists: {test_phone}")
+    
     test_payloads = {
         'youtube': {
             'NumMedia': '0',
             'Body': 'Check this out: https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-            'From': '+1234567890',
+            'From': test_phone,
             'source_type': 'dm'
         },
         'instagram': {
             'NumMedia': '0',
             'Body': 'Amazing reel: https://www.instagram.com/reel/ABC123xyz/',
-            'From': '+1234567890',
+            'From': test_phone,
             'source_type': 'dm'
         },
         'image': {
             'NumMedia': '1',
             'MediaContentType0': 'image/jpeg',
             'Body': '',
-            'From': '+1234567890',
+            'From': test_phone,
             'source_type': 'dm'
         },
         'video': {
             'NumMedia': '1',
             'MediaContentType0': 'video/mp4',
             'Body': '',
-            'From': '+1234567890',
+            'From': test_phone,
             'source_type': 'dm'
         },
         'text': {
             'NumMedia': '0',
             'Body': 'Just a regular text message',
-            'From': '+1234567890',
+            'From': test_phone,
             'source_type': 'dm'
         }
     }
     
     payload = test_payloads.get(payload_type, test_payloads['youtube'])
     
-    # Insert test job
+    # Insert test job with correct schema
     result = supabase.table('jobs').insert({
-        'phone_number': '+1234567890',
+        'user_id': test_phone,  # FK to users.phone_number
+        'source_channel_id': 'test-channel-123',
+        'source_type': payload.get('source_type', 'dm'),
+        'user_phone': test_phone,  # Denormalized for quick access
         'payload': payload,
         'status': 'pending'
     }).execute()
