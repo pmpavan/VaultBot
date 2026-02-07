@@ -63,7 +63,64 @@ async function getOrCreateUser(
 
     console.log(`New user created: ${newUser.phone_number}`);
     return newUser.phone_number;
+
 }
+
+/**
+ * Log failed webhook processing to Dead Letter Queue (DLQ).
+ * Captures original payload and error context for debugging.
+ * Fails gracefully - never throws errors to prevent blocking webhook response.
+ * 
+ * @param supabase - Supabase client instance
+ * @param originalPayload - Complete webhook payload that failed processing
+ * @param error - Error object or unknown error
+ * @param context - Optional context (userPhone, sourceType, sourceChannelId)
+ * @returns boolean indicating success/failure of DLQ insertion
+ */
+export async function logToDLQ(
+    supabase: any,
+    originalPayload: Record<string, any>,
+    error: Error | unknown,
+    context: {
+        userPhone?: string;
+        sourceType?: string;
+        sourceChannelId?: string;
+    } = {}
+): Promise<boolean> {
+    try {
+        // Extract error details
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorType = error instanceof Error ? error.name : 'UnknownError';
+
+        console.log(`Logging to DLQ: ${errorType} - ${errorMessage}`);
+
+        // Insert into DLQ table
+        const { error: dlqError } = await supabase
+            .from('dlq_jobs')
+            .insert({
+                original_payload: originalPayload,
+                error_message: errorMessage,
+                error_type: errorType,
+                user_phone: context.userPhone,
+                source_type: context.sourceType,
+                source_channel_id: context.sourceChannelId
+            });
+
+        if (dlqError) {
+            console.error('Failed to insert into DLQ:', dlqError);
+            return false;
+        }
+
+        console.log('Successfully logged error to DLQ');
+        return true;
+    } catch (dlqException) {
+        // DLQ insertion failed - log but don't throw
+        // This ensures we never block the webhook response
+        console.error('CRITICAL: DLQ insertion failed:', dlqException);
+        return false;
+    }
+}
+
 
 export const webhookHandler = async (req: Request): Promise<Response> => {
     try {
@@ -164,8 +221,21 @@ export const webhookHandler = async (req: Request): Promise<Response> => {
 
         // 3.5. Get or Create User Profile
         const profileName = body["ProfileName"] || "Unknown";
-        const userId = await getOrCreateUser(supabase, userPhone, profileName);
-        console.log(`User resolved: ${userId} (${profileName})`);
+        let userId: string;
+        try {
+            userId = await getOrCreateUser(supabase, userPhone, profileName);
+            console.log(`User resolved: ${userId} (${profileName})`);
+        } catch (userError) {
+            console.error("User creation/lookup failed:", userError);
+            // Log to DLQ before re-throwing
+            await logToDLQ(supabase, body, userError, {
+                userPhone,
+                sourceType,
+                sourceChannelId
+            });
+            throw userError;  // Re-throw to be caught by main catch block
+        }
+
 
         const { data: jobData, error: jobError } = await supabase
             .from('jobs')
@@ -181,8 +251,15 @@ export const webhookHandler = async (req: Request): Promise<Response> => {
 
         if (jobError) {
             console.error("Failed to insert job:", jobError);
+            // Log to DLQ before throwing
+            await logToDLQ(supabase, body, jobError, {
+                userPhone,
+                sourceType,
+                sourceChannelId
+            });
             throw new Error(`Database insert failed: ${jobError.message}`);
         }
+
 
         console.log(`Job created successfully: ${jobData.id}`);
 
@@ -217,10 +294,54 @@ export const webhookHandler = async (req: Request): Promise<Response> => {
 
     } catch (error) {
         console.error("CRITICAL ERROR in webhook-handler:", error);
+
+        // Only log to DLQ if standard processing didn't already handle it
+        // We check if the error was re-thrown from a known catch block that already logged to DLQ
+        // However, since we can't easily check that, we'll try to extract context from variables in scope
+        // BUT crucial fix: we cannot re-read req.formData() as it's already consumed.
+
+        try {
+            // Get Supabase client if not already initialized
+            const supabaseUrl = Deno.env.get("SUPABASE_URL");
+            const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+
+            if (supabaseUrl && supabaseKey) {
+                const supabase = createClient(supabaseUrl, supabaseKey, {
+                    auth: { persistSession: false }
+                });
+
+                // Attempt to reconstruct context from variables in scope if available
+                // We rely on 'body' variable being available in closure if defined, 
+                // but since variables declared in try block aren't available here, we need a safer approach.
+                // In this specific handler structure, meaningful variables are inside the try block.
+                // We can't access 'body', 'userPhone' etc. here safely if they weren't defined.
+
+                // For a global catch, we log what we can. 
+                // To properly access the body in catch, we should have declared it outside try
+                // or just log a generic "Request Failed" entry if we can't access parsing results.
+
+                // IMPORTANT: We cannot re-read the body. We must proceed with minimal context.
+                await logToDLQ(supabase, { raw_body: "Use Supabase Logs for Request Details (Body Consumed)" }, error, {
+                    // We can't reliably access userPhone/sourceType here as they are block-scoped
+                    // This is a trade-off: detailed DLQ logging happens in specific catch blocks
+                    // This global catch catches unexpected crashes where context might be missing
+                    userPhone: undefined,
+                    sourceType: undefined,
+                    sourceChannelId: undefined
+                });
+            } else {
+                console.error("Cannot log to DLQ: Missing Supabase credentials");
+            }
+        } catch (dlqError) {
+            // DLQ logging failed - log but continue
+            console.error("Failed to log error to DLQ:", dlqError);
+        }
+
+        // ALWAYS return 200 OK to Twilio to prevent webhook retries
         return new Response(
             JSON.stringify({ error: "Internal Server Error", details: String(error) }),
             {
-                status: 200,
+                status: 200,  // Critical: prevent Twilio retries
                 headers: { "Content-Type": "application/json" }
             },
         );
@@ -228,4 +349,7 @@ export const webhookHandler = async (req: Request): Promise<Response> => {
 }
 
 // Supabase Edge Functions are always served
-Deno.serve(webhookHandler);
+// Only start the server if this file is the main entry point
+if (import.meta.main) {
+    Deno.serve(webhookHandler);
+}

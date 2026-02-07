@@ -165,7 +165,7 @@ So that we can debug scraping failures or edge cases.
 **And** The System MUST still return `200 OK` to Twilio to prevent webhook retries/backoff
 
 ### Epic 2: "The Analyst" (Intelligence Engine)
-**Goal:** Transform raw links and videos into structured "Knowledge" (Summary, Vibe, Price) using AI.
+**Goal:** Transform raw links, videos, images, and text into structured "Knowledge" (Summary, Vibe, Price) using AI.
 **User Value:** "The system understands the content I saved, even if I didn't type anything."
 **FRs Covered:** FR-04, FR-05, FR-06, FR-07.
 
@@ -211,7 +211,41 @@ So that it can describe the content even if it has no caption.
 **And** Send these frames to the Vision API
 **And** Aggregate the frame descriptions into a single "Video Content Summary"
 
-### Story 2.4: Data Normalizer Agent
+### Story 2.4: Image Post Extraction (Social Media)
+
+As a User,
+I want to save image posts from Instagram, TikTok, and YouTube,
+So that the system can analyze the visual content even when there's no video.
+
+**Acceptance Criteria:**
+
+**Given** a social media URL pointing to an image post (Instagram photo, TikTok image carousel, YouTube community post)
+**When** the Image Extractor processes it
+**Then** it MUST download the image(s) from the platform
+**And** Extract platform metadata (caption, hashtags, author, post date)
+**And** Send the image(s) to the Vision API (Story 2.1) for semantic analysis
+**And** Return structured metadata: `title`, `description`, `author`, `image_urls`, `platform`, `content_type='image'`
+**And** Handle multiple images in a single post (carousel/album)
+**And** Use proxy rotation to avoid IP blocks
+
+### Story 2.5: Text & Article Parser
+
+As a User,
+I want to save links to blog posts, news articles, and text-based content,
+So that I can search through written content later.
+
+**Acceptance Criteria:**
+
+**Given** a URL pointing to a blog post, news article, or generic web page
+**When** the Text Parser processes it
+**Then** it MUST extract the main article text (removing ads, navigation, footers)
+**And** Extract metadata: `title`, `author`, `publish_date`, `site_name`
+**And** Extract OpenGraph tags if available (og:title, og:description, og:image)
+**And** Return the full text content for downstream summarization (Story 2.7)
+**And** Handle paywalled content gracefully (extract what's available, mark as partial)
+**And** Detect and classify content type: 'article', 'blog', 'documentation', 'generic'
+
+### Story 2.6: Data Normalizer Agent
 
 As a System,
 I want to standardize the chaotic AI output into a clean schema,
@@ -224,7 +258,7 @@ So that we can run SQL queries on `price` and `category`.
 **Then** it MUST output a JSON object: `{ "category": "Food", "price_range": "$$$", "tags": ["Sushi", "Japanese", "Date Night"] }`
 **And** It MUST strictly adhere to the defined ENUMs for Category
 
-### Story 2.5: Natural Language Summary Generator
+### Story 2.7: Natural Language Summary Generator
 
 As a User,
 I want a concise summary of what I saved,
