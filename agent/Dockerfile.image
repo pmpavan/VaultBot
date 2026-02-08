@@ -1,0 +1,28 @@
+# Use Python 3.14 slim image
+FROM python:3.14-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+# Instaloader handles JSON and basic requests, but we might need lxml for faster parsing if used
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libxml2-dev \
+    libxslt1-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements file
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy source code
+COPY src/ ./src/
+
+# Set Python path
+ENV PYTHONPATH=/app
+
+# Run the image worker
+CMD ["python", "src/image_worker.py"]

@@ -7,7 +7,7 @@ and identifies platform origins for link-based content.
 """
 
 import re
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, TypedDict
 from urllib.parse import urlparse
 
 
@@ -98,20 +98,84 @@ class ContentClassifier:
         return 'generic'
 
 
+from langgraph.graph import StateGraph, END
+
+class ClassifierState(TypedDict):
+    """(State) for classifier node."""
+    job_id: Optional[str]
+    payload: Dict
+    content_type: Optional[str]
+    platform: Optional[str]
+    error: Optional[str]
+
+
+class ClassifierNode:
+    """
+    LangGraph node for classifying content.
+    """
+    def __init__(self):
+        self.classifier = ContentClassifier()
+
+    def __call__(self, state: ClassifierState) -> ClassifierState:
+        """
+        Process payload from state.
+        """
+        try:
+            payload = state["payload"]
+            content_type, platform = self.classifier.detect_content_type(payload)
+            
+            return {
+                **state,
+                "content_type": content_type,
+                "platform": platform,
+                "error": None
+            }
+        except Exception as e:
+            return {
+                **state,
+                "content_type": None,
+                "platform": None,
+                "error": str(e)
+            }
+
+def create_classifier_graph():
+    """Create and compile the classifier graph."""
+    node = ClassifierNode()
+    
+    workflow = StateGraph(ClassifierState)
+    
+    # Add the node
+    workflow.add_node("classifier", node)
+    
+    # Set entry point
+    workflow.set_entry_point("classifier")
+    
+    # Set finish point
+    workflow.add_edge("classifier", END)
+    
+    # Compile
+    return workflow.compile()
+
+# Legacy wrapper for backward compatibility (if needed by tests)
 def classify_job_payload(payload: Dict) -> Dict[str, Optional[str]]:
     """
     Classify a job payload and return content_type and platform.
-    
-    Args:
-        payload: Twilio webhook payload from jobs table
-        
-    Returns:
-        Dictionary with 'content_type' and 'platform' keys
+    (Legacy wrapper using the graph internally)
     """
-    classifier = ContentClassifier()
-    content_type, platform = classifier.detect_content_type(payload)
+    graph = create_classifier_graph()
+    initial_state: ClassifierState = {
+        "job_id": None,
+        "payload": payload,
+        "content_type": None,
+        "platform": None,
+        "error": None
+    }
+    result = graph.invoke(initial_state)
     
+    if result.get("error"):
+        raise Exception(result["error"])
+        
     return {
-        'content_type': content_type,
-        'platform': platform
+        "content_type": result["content_type"],
+        "platform": result["platform"]
     }

@@ -3,19 +3,21 @@ LangGraph node for video processing.
 Integrates video frame extraction and analysis into the agent workflow.
 """
 
-from typing import TypedDict, Any
+from typing import TypedDict, Any, Optional
 from tools.video import VideoProcessingService, VideoProcessingRequest
 
+
+from langgraph.graph import StateGraph, END
 
 class VideoProcessorState(TypedDict):
     """State for video processor node."""
     job_id: str
     video_url: str
     message_id: str
-    auth_token: str | None
-    account_sid: str | None
-    video_summary: str | None
-    error: str | None
+    auth_token: Optional[str]
+    account_sid: Optional[str]
+    video_summary: Optional[str]
+    error: Optional[str]
 
 
 class VideoProcessorNode:
@@ -55,15 +57,6 @@ class VideoProcessorNode:
             # Process video
             response = self.service.process_video(request)
             
-            # NOTE (AC 6): Database persistence handled by orchestrator/worker layer
-            # This node follows the separation of concerns pattern (see worker.py):
-            # - Nodes are pure: process state and return updated state
-            # - Orchestrator/worker persists results to database
-            # The video_worker.py (or extended worker.py) will:
-            # 1. Call this node to get video_summary in state
-            # 2. Persist summary to jobs table (result JSONB field or payload)
-            # 3. Update job status to 'complete'
-            
             # Update state with summary
             return {
                 **state,
@@ -80,15 +73,28 @@ class VideoProcessorNode:
             }
 
 
-# Factory function for creating the node
+def create_video_processor_graph(num_frames: int = 5):
+    """Create and compile the video processor graph."""
+    node = VideoProcessorNode(num_frames=num_frames)
+    
+    workflow = StateGraph(VideoProcessorState)
+    
+    # Add the node
+    workflow.add_node("processor", node)
+    
+    # Set entry point
+    workflow.set_entry_point("processor")
+    
+    # Set finish point
+    workflow.add_edge("processor", END)
+    
+    # Compile
+    return workflow.compile()
+
+# Legacy factory for backward compatibility
 def create_video_processor_node(num_frames: int = 5) -> VideoProcessorNode:
     """
     Create a video processor node instance.
-    
-    Args:
-        num_frames: Number of frames to extract
-        
-    Returns:
-        VideoProcessorNode instance
+    (Legacy factory)
     """
     return VideoProcessorNode(num_frames=num_frames)

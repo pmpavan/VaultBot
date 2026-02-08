@@ -182,13 +182,18 @@ class ScraperWorker:
             if not to.startswith('whatsapp:'):
                 to = f"whatsapp:{to}"
             
+            # Ensure sender is formatted for WhatsApp if recipient is
+            from_number = self.twilio_from
+            if to.startswith('whatsapp:') and not from_number.startswith('whatsapp:'):
+                from_number = f"whatsapp:{from_number}"
+            
             msg = f"✅ *Saved to Vault!* \n\n"
             msg += f"📌 *Title:* {title or 'Shared Link'}\n"
             msg += f"🌐 *Platform:* {platform.title()}\n\n"
             msg += f"I've cataloged this for you. You can search for it anytime! 🗃️"
             
             self.twilio_client.messages.create(
-                from_=self.twilio_from,
+                from_=from_number,
                 to=to,
                 body=msg
             )
@@ -204,9 +209,19 @@ class ScraperWorker:
         
         message = self.ERROR_MESSAGES.get(error_category, self.ERROR_MESSAGES['unknown'])
         try:
+            # Ensure recipient has whatsapp prefix
+            to_number = user_phone
+            if not to_number.startswith('whatsapp:'):
+                to_number = f"whatsapp:{user_phone}"
+
+            # Ensure sender is formatted for WhatsApp if recipient is
+            from_number = self.twilio_from
+            if to_number.startswith('whatsapp:') and not from_number.startswith('whatsapp:'):
+                from_number = f"whatsapp:{from_number}"
+
             self.twilio_client.messages.create(
-                from_=self.twilio_from,
-                to=f"whatsapp:{user_phone}",
+                from_=from_number,
+                to=to_number,
                 body=f"⚠️ {message}"
             )
         except Exception as e:

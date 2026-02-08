@@ -14,7 +14,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from nodes.classifier import classify_job_payload
+from nodes.classifier import create_classifier_graph, ClassifierState
 
 # Configure logging
 logging.basicConfig(
@@ -79,6 +79,9 @@ class ClassifierWorker:
         except Exception as e:
             logger.error(f"Failed to initialize Twilio client: {e}")
             raise
+        
+        # Initialize classifier graph
+        self.classifier_graph = create_classifier_graph()
     
     @retry(
         stop=stop_after_attempt(3),
@@ -128,14 +131,30 @@ class ClassifierWorker:
             payload = job['payload']
             logger.debug(f"Processing job {job_id} with payload: {payload}")
             
-            # Classify content
-            classification = classify_job_payload(payload)
-            logger.info(f"Job {job_id} classified as {classification['content_type']} / {classification['platform']}")
+            # Create state for classifier
+            state: ClassifierState = {
+                'job_id': job_id,
+                'payload': payload,
+                'content_type': None,
+                'platform': None,
+                'error': None
+            }
+            
+            # Classify content using graph
+            result_state = self.classifier_graph.invoke(state)
+            
+            if result_state.get('error'):
+                raise Exception(result_state['error'])
+            
+            content_type = result_state['content_type']
+            platform = result_state['platform']
+            
+            logger.info(f"Job {job_id} classified as {content_type} / {platform}")
             
             # Update job with classification
             self.supabase.table('jobs').update({
-                'content_type': classification['content_type'],
-                'platform': classification['platform'],
+                'content_type': content_type,
+                'platform': platform,
                 'status': 'pending'  # Ready for next processing node
             }).eq('id', job_id).execute()
             
@@ -198,11 +217,21 @@ class ClassifierWorker:
                 logger.warning(f"No phone number found in job {job['id']} payload")
                 return
             
+            # Ensure recipient has whatsapp prefix if needed (though payload usually has it)
+            if not user_phone.startswith('whatsapp:') and len(user_phone) > 10:
+                 # heuristic: if it looks like a phone number but missing prefix
+                 user_phone = f"whatsapp:{user_phone}"
+
+            # Ensure sender is formatted for WhatsApp if recipient is
+            from_number = self.twilio_from
+            if user_phone.startswith('whatsapp:') and not from_number.startswith('whatsapp:'):
+                from_number = f"whatsapp:{from_number}"
+            
             # Get user-friendly message
             message = self.ERROR_MESSAGES.get(error_category, self.ERROR_MESSAGES['unknown'])
             
             self.twilio_client.messages.create(
-                from_=self.twilio_from,
+                from_=from_number,
                 to=user_phone,
                 body=f"⚠️ {message}"
             )

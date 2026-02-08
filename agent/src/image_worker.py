@@ -1,12 +1,12 @@
 """
-Video Worker - Processes video jobs and extracts content summaries
-Story: 2.3 - Video Frame Extraction
+Image Worker - Processes image jobs and extracts content summaries
+Story: 2.4 - Image Post Extraction
 """
 
 import os
 import sys
 import logging
-from typing import Optional
+from typing import Optional, Dict, Any
 from supabase import create_client, Client
 from twilio.rest import Client as TwilioClient
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -14,7 +14,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from nodes.video_processor import create_video_processor_graph, VideoProcessorState
+from nodes.image_processor import ImageProcessorNode, ImageProcessorState
 
 # Configure logging
 logging.basicConfig(
@@ -24,15 +24,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class VideoWorker:
-    """Worker that processes video jobs and extracts content summaries."""
+class ImageWorker:
+    """Worker that processes image jobs and extracts content summaries."""
     
     # User-friendly error messages
     ERROR_MESSAGES = {
-        'download_failed': "Sorry, we couldn't download your video. Please try sending it again.",
-        'processing_failed': "We had trouble processing your video. Please try a different video.",
+        'download_failed': "Sorry, we couldn't download your images. Please try sending them again.",
+        'processing_failed': "We had trouble processing your images. Please try different images.",
         'network_error': "We're having trouble connecting. Please try again in a few moments.",
-        'unknown': "Something went wrong processing your video. Our team has been notified."
+        'unknown': "Something went wrong processing your images. Our team has been notified."
     }
     
     def __init__(self):
@@ -56,7 +56,7 @@ class VideoWorker:
             logger.error(error_msg)
             raise EnvironmentError(error_msg)
         
-        logger.info("Initializing VideoWorker...")
+        logger.info("Initializing ImageWorker...")
         
         # Initialize Supabase client
         try:
@@ -81,8 +81,9 @@ class VideoWorker:
             logger.error(f"Failed to initialize Twilio client: {e}")
             raise
         
-        # Initialize video processor graph
-        self.video_processor_graph = create_video_processor_graph(num_frames=5)
+        # Initialize image processor graph
+        from nodes.image_processor import create_image_processor_graph
+        self.image_processor = create_image_processor_graph()
     
     @retry(
         stop=stop_after_attempt(3),
@@ -90,18 +91,18 @@ class VideoWorker:
         retry=retry_if_exception_type((ConnectionError, TimeoutError)),
         reraise=True
     )
-    def fetch_and_lock_video_job(self) -> Optional[dict]:
+    def fetch_and_lock_image_job(self) -> Optional[dict]:
         """
-        Fetch one pending video job and atomically update to 'processing'.
+        Fetch one pending image job and atomically update to 'processing'.
         Retries on transient network errors.
         
         Returns:
             Job record if found, None otherwise
         """
         try:
-            # Fetch pending video jobs
+            # Fetch pending image jobs
             result = self.supabase.table('jobs').select('*').eq(
-                'content_type', 'video'
+                'content_type', 'image'
             ).eq(
                 'status', 'pending'
             ).limit(1).execute()
@@ -119,19 +120,19 @@ class VideoWorker:
             
             # Check if we successfully claimed the job
             if update_result.data and len(update_result.data) > 0:
-                logger.info(f"Claimed video job {job_id} for processing")
+                logger.info(f"Claimed image job {job_id} for processing")
                 return job
             
             # Another worker claimed it
             return None
             
         except Exception as e:
-            logger.warning(f"Error fetching video job: {e}")
+            logger.warning(f"Error fetching image job: {e}")
             raise
     
     def process_and_update(self, job: dict) -> bool:
         """
-        Process video job and update database with results.
+        Process image job and update database with results.
         
         Args:
             job: Job record from database
@@ -144,63 +145,78 @@ class VideoWorker:
         try:
             # Extract payload
             payload = job['payload']
-            logger.debug(f"Processing video job {job_id}")
+            logger.debug(f"Processing image job {job_id}")
             
-            # Get video URL from payload
-            # Twilio sends video as MediaUrl0, MediaUrl1, etc.
-            video_url = None
-            for i in range(10):  # Check up to 10 media items
+            # Get URL from payload (could be Twilio MediaUrl or a Social Media Link)
+            url = None
+            
+            # Case 1: Social Media Link (from text message)
+            if 'Body' in payload:
+                # Simple extraction, assumes classifier validated this is an image link
+                # In real flow, classifier might put URL in a specific field
+                # But here we assume Body contains the URL
+                url = payload['Body'].strip()
+                
+            # Case 2: Twilio Media Attachment (MMS/WhatsApp Image)
+             # Check up to 10 media items
+            for i in range(10): 
                 media_key = f'MediaUrl{i}' if i > 0 else 'MediaUrl0'
                 if media_key in payload:
-                    video_url = payload[media_key]
+                    url = payload[media_key]
                     break
             
-            if not video_url:
-                raise ValueError("No video URL found in payload")
+            if not url:
+                raise ValueError("No URL found in payload")
             
-            # Get Twilio auth token for video download
-            auth_token = os.environ.get('TWILIO_AUTH_TOKEN')
+            # Determine platform hint from classifier??
+            # The job table might have metadata, but for now we rely on extractor service detection
+            platform_hint = None
             
-            # Create state for video processor node
-            state: VideoProcessorState = {
+            # Create state for image processor node
+            state: ImageProcessorState = {
                 'job_id': job_id,
-                'video_url': video_url,
+                'url': url,
                 'message_id': payload.get('MessageSid', job_id),
-                'auth_token': auth_token,
-                'account_sid': self.twilio_client.account_sid,
-                'video_summary': None,
+                'platform_hint': platform_hint,
+                'image_summary': None,
+                'metadata': None,
                 'error': None
             }
             
-            # Process video
-            logger.info(f"Processing video for job {job_id}")
-            result_state = self.video_processor_graph.invoke(state)
+            # Process image
+            logger.info(f"Processing image for job {job_id}")
+            # Invoke the graph - returns the final state
+            result_state = self.image_processor.invoke(state)
             
             # Check for errors
             if result_state.get('error'):
                 raise Exception(result_state['error'])
             
-            video_summary = result_state.get('video_summary')
-            if not video_summary:
-                raise Exception("No video summary generated")
+            image_summary = result_state.get('image_summary')
+            if not image_summary:
+                raise Exception("No image summary generated")
             
-            logger.info(f"Video job {job_id} processed successfully")
+            logger.info(f"Image job {job_id} processed successfully")
             
             # Update job with results
+            result_data = {
+                'image_summary': image_summary,
+                'content_type': 'image'
+            }
+            if result_state.get('metadata'):
+                result_data['metadata'] = result_state['metadata']
+                
             self.supabase.table('jobs').update({
-                'result': {
-                    'video_summary': video_summary,
-                    'content_type': 'video'
-                },
+                'result': result_data,
                 'status': 'complete'
             }).eq('id', job_id).execute()
             
             logger.info(f"Job {job_id} successfully completed and updated")
             
-            # 5. Notify User
+            # Notify User
             user_phone = payload.get('From', '')
             if user_phone:
-                self.notify_user_success(user_phone, "Video Analysis")
+                self.notify_user_success(user_phone, "Image Analysis")
                 
             return True
             
@@ -233,8 +249,8 @@ class VideoWorker:
             if to.startswith('whatsapp:') and not from_number.startswith('whatsapp:'):
                 from_number = f"whatsapp:{from_number}"
             
-            msg = f"✅ *Video Processed!* \n\n"
-            msg += f"Your video has been analyzed and the summary is ready in your Vault. 🎥"
+            msg = f"✅ *Image Processed!* \n\n"
+            msg += f"Your image has been analyzed and the summary is ready in your Vault. 📸"
             
             self.twilio_client.messages.create(
                 from_=from_number,
@@ -246,24 +262,16 @@ class VideoWorker:
             logger.error(f"Failed to send success message: {e}")
     
     def _mark_job_failed(self, job: dict, error_category: str):
-        """
-        Mark job as failed and notify user.
-        
-        Args:
-            job: Job record
-            error_category: Category of error for user-friendly message
-        """
+        """Mark job as failed and notify user."""
         job_id = job['id']
         
         try:
-            # Mark as failed
             self.supabase.table('jobs').update({
                 'status': 'failed'
             }).eq('id', job_id).execute()
             
             logger.warning(f"Job {job_id} marked as failed (category: {error_category})")
             
-            # Notify user
             self.notify_user_failure(job, error_category)
             
         except Exception as e:
@@ -275,14 +283,7 @@ class VideoWorker:
         reraise=False
     )
     def notify_user_failure(self, job: dict, error_category: str):
-        """
-        Notify user via WhatsApp about processing failure.
-        Retries once on failure, but doesn't raise if notification fails.
-        
-        Args:
-            job: Job record
-            error_category: Category of error for user-friendly message
-        """
+        """Notify user via WhatsApp about processing failure."""
         try:
             payload = job['payload']
             user_phone = payload.get('From', '')
@@ -301,7 +302,6 @@ class VideoWorker:
             if user_phone.startswith('whatsapp:') and not from_number.startswith('whatsapp:'):
                 from_number = f"whatsapp:{from_number}"
             
-            # Get user-friendly message
             message = self.ERROR_MESSAGES.get(error_category, self.ERROR_MESSAGES['unknown'])
             
             self.twilio_client.messages.create(
@@ -314,17 +314,11 @@ class VideoWorker:
             
         except Exception as e:
             logger.error(f"Failed to send notification for job {job['id']}: {e}")
-            # Don't raise - notification failure shouldn't crash the worker
     
     def process_one_job(self) -> bool:
-        """
-        Process one video job from the queue.
-        
-        Returns:
-            True if a job was processed, False if queue is empty
-        """
+        """Process one image job from the queue."""
         try:
-            job = self.fetch_and_lock_video_job()
+            job = self.fetch_and_lock_image_job()
             
             if not job:
                 return False
@@ -337,13 +331,8 @@ class VideoWorker:
             return False
     
     def run_loop(self, max_iterations: Optional[int] = None):
-        """
-        Run worker loop to process video jobs.
-        
-        Args:
-            max_iterations: Maximum number of iterations (None for infinite)
-        """
-        logger.info(f"Starting video worker loop (max_iterations={max_iterations})")
+        """Run worker loop to process image jobs."""
+        logger.info(f"Starting image worker loop (max_iterations={max_iterations})")
         iteration = 0
         
         while True:
@@ -354,9 +343,8 @@ class VideoWorker:
             processed = self.process_one_job()
             
             if not processed:
-                # No jobs available, wait before retrying
                 import time
-                logger.debug("No video jobs available, sleeping for 5 seconds")
+                logger.debug("No image jobs available, sleeping for 5 seconds")
                 time.sleep(5)
             
             iteration += 1
@@ -364,10 +352,10 @@ class VideoWorker:
 
 if __name__ == '__main__':
     try:
-        worker = VideoWorker()
+        worker = ImageWorker()
         worker.run_loop()
     except KeyboardInterrupt:
-        logger.info("Video worker stopped by user")
+        logger.info("Image worker stopped by user")
     except Exception as e:
-        logger.critical(f"Video worker crashed: {e}", exc_info=True)
+        logger.critical(f"Image worker crashed: {e}", exc_info=True)
         sys.exit(1)

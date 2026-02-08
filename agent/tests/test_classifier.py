@@ -4,7 +4,7 @@ Story: 1.3 - Payload Parser & Classification
 """
 
 import unittest
-from src.nodes.classifier import ContentClassifier, classify_job_payload
+from nodes.classifier import ContentClassifier, classify_job_payload
 
 
 class TestContentClassifier(unittest.TestCase):

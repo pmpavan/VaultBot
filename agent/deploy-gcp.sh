@@ -7,6 +7,7 @@ REGION="us-central1"
 SERVICE_NAME_CLASSIFIER="vaultbot-classifier-worker"
 SERVICE_NAME_VIDEO="vaultbot-video-worker"
 SERVICE_NAME_SCRAPER="vaultbot-scraper-worker"
+SERVICE_NAME_IMAGE="vaultbot-image-worker"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -154,6 +155,41 @@ gcloud run jobs create $SERVICE_NAME_SCRAPER \
 echo -e "${GREEN}▶️  Starting Scraper Worker Job...${NC}"
 gcloud run jobs execute $SERVICE_NAME_SCRAPER --region $REGION
 
+# Build and deploy Image Worker
+echo ""
+echo -e "${GREEN}🏗️  Building and pushing Image Worker to GCR...${NC}"
+cat > cloudbuild-image.yaml <<EOF
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-f', 'Dockerfile.image', '-t', 'gcr.io/$PROJECT_ID/$SERVICE_NAME_IMAGE', '.']
+images:
+- 'gcr.io/$PROJECT_ID/$SERVICE_NAME_IMAGE'
+timeout: 1200s
+EOF
+
+gcloud builds submit --config=cloudbuild-image.yaml --timeout=20m .
+
+echo -e "${GREEN}🚀 Deploying Image Worker as Cloud Run Job...${NC}"
+gcloud run jobs create $SERVICE_NAME_IMAGE \
+    --image gcr.io/$PROJECT_ID/$SERVICE_NAME_IMAGE \
+    --region $REGION \
+    --memory 512Mi \
+    --cpu 1 \
+    --max-retries 0 \
+    --task-timeout 86400s \
+    --set-env-vars "SUPABASE_URL=${SUPABASE_URL},SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY},TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID},TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN},TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER},OPENROUTER_API_KEY=${OPENROUTER_API_KEY},PROXY_PROVIDER=${PROXY_PROVIDER},PROXY_USERNAME=${PROXY_USERNAME},PROXY_PASSWORD=${PROXY_PASSWORD},PROXY_HOST=${PROXY_HOST},PROXY_PORT=${PROXY_PORT}" \
+    || gcloud run jobs update $SERVICE_NAME_IMAGE \
+    --image gcr.io/$PROJECT_ID/$SERVICE_NAME_IMAGE \
+    --region $REGION \
+    --memory 512Mi \
+    --cpu 1 \
+    --max-retries 0 \
+    --task-timeout 86400s \
+    --set-env-vars "SUPABASE_URL=${SUPABASE_URL},SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY},TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID},TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN},TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER},OPENROUTER_API_KEY=${OPENROUTER_API_KEY},PROXY_PROVIDER=${PROXY_PROVIDER},PROXY_USERNAME=${PROXY_USERNAME},PROXY_PASSWORD=${PROXY_PASSWORD},PROXY_HOST=${PROXY_HOST},PROXY_PORT=${PROXY_PORT}" 
+
+echo -e "${GREEN}▶️  Starting Image Worker Job...${NC}"
+gcloud run jobs execute $SERVICE_NAME_IMAGE --region $REGION
+
 echo ""
 echo -e "${GREEN}✅ Deployment complete!${NC}"
 echo ""
@@ -161,5 +197,6 @@ echo "📊 Service status (view logs):"
 echo "   gcloud run jobs executions list --job=$SERVICE_NAME_CLASSIFIER --region=$REGION"
 echo "   gcloud run jobs executions list --job=$SERVICE_NAME_VIDEO --region=$REGION"
 echo "   gcloud run jobs executions list --job=$SERVICE_NAME_SCRAPER --region=$REGION"
+echo "   gcloud run jobs executions list --job=$SERVICE_NAME_IMAGE --region=$REGION"
 echo ""
 
