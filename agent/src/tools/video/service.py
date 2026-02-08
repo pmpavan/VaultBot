@@ -33,9 +33,10 @@ class VideoProcessingService:
         self.vision_service = VisionService()
 
     def download_video(
-        self, 
-        video_url: str, 
-        auth_token: Optional[str] = None
+        self,
+        video_url: str,
+        auth_token: Optional[str] = None,
+        account_sid: Optional[str] = None,
     ) -> str:
         """
         Download video from URL to temporary file.
@@ -56,15 +57,15 @@ class VideoProcessingService:
         try:
             # Prepare headers with authentication if provided
             headers = {}
-            if auth_token:
-                # For Twilio MediaUrl, use HTTP Basic Auth
-                # Format: username:password where username is AccountSid
-                # For now, we'll pass the token directly
-                # In production, this might need to be split or configured differently
+            auth = None
+            if account_sid and auth_token:
+                # For Twilio MediaUrl, use HTTP Basic Auth (SID as username)
+                auth = (account_sid, auth_token)
+            elif auth_token:
                 headers['Authorization'] = f'Bearer {auth_token}'
             
             # Download video
-            response = requests.get(video_url, headers=headers, stream=True, timeout=30)
+            response = requests.get(video_url, headers=headers, auth=auth, stream=True, timeout=30)
             response.raise_for_status()
             
             # Save to temporary file
@@ -169,7 +170,8 @@ class VideoProcessingService:
             # Step 1: Download video
             temp_video_path = self.download_video(
                 request.video_url,
-                request.auth_token
+                request.auth_token,
+                request.account_sid
             )
             
             # Step 2: Extract frames

@@ -167,6 +167,7 @@ class VideoWorker:
                 'video_url': video_url,
                 'message_id': payload.get('MessageSid', job_id),
                 'auth_token': auth_token,
+                'account_sid': self.twilio_client.account_sid,
                 'video_summary': None,
                 'error': None
             }
@@ -195,6 +196,12 @@ class VideoWorker:
             }).eq('id', job_id).execute()
             
             logger.info(f"Job {job_id} successfully completed and updated")
+            
+            # 5. Notify User
+            user_phone = payload.get('From', '')
+            if user_phone:
+                self.notify_user_success(user_phone, "Video Analysis")
+                
             return True
             
         except ValueError as e:
@@ -214,6 +221,24 @@ class VideoWorker:
             
             self._mark_job_failed(job, error_category)
             return False
+
+    def notify_user_success(self, to: str, title: str):
+        """Send a success message via WhatsApp."""
+        try:
+            if not to.startswith('whatsapp:'):
+                to = f"whatsapp:{to}"
+            
+            msg = f"✅ *Video Processed!* \n\n"
+            msg += f"Your video has been analyzed and the summary is ready in your Vault. 🎥"
+            
+            self.twilio_client.messages.create(
+                from_=self.twilio_from,
+                to=to,
+                body=msg
+            )
+            logger.info(f"Success message sent to {to}")
+        except Exception as e:
+            logger.error(f"Failed to send success message: {e}")
     
     def _mark_job_failed(self, job: dict, error_category: str):
         """

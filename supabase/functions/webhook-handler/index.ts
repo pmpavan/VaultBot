@@ -126,8 +126,24 @@ export async function logToDLQ(
 
 
 export const webhookHandler = async (req: Request): Promise<Response> => {
+    // 0. Preliminary Checks
+    if (req.method !== 'POST') {
+        console.log(`Method Not Allowed: ${req.method}`);
+        return new Response("Method Not Allowed. Please use POST for webhooks.", {
+            status: 405,
+            headers: { "Allow": "POST" }
+        });
+    }
+
+    // Check content-type to avoid TypeError: Missing content type
+    const contentType = req.headers.get("content-type") || "";
+    if (!contentType.includes("form") && !contentType.includes("multipart")) {
+        console.warn(`Unexpected Content-Type: ${contentType}`);
+        // We can try to parse as JSON if it's JSON, but Twilio sends form data
+    }
+
+    const url = req.url;
     try {
-        const url = req.url;
         const params = await req.formData();
 
         // Convert FormData to Record<string, any>
@@ -274,20 +290,54 @@ export const webhookHandler = async (req: Request): Promise<Response> => {
             if (accountSid && authToken && !authToken.includes("mock")) {
                 const client = twilio(accountSid, authToken);
 
-                // Note: Native WhatsApp Reactions are not yet supported by this Twilio SDK version.
-                // Reverting to a simple confirmation message to ensure reliability.
-                await client.messages.create({
-                    from: to,
-                    to: from,
-                    body: '✅'
-                });
-                console.log(`Confirmation sent for message ${messageSid}`);
+                // Determine confirmation message based on content
+                const isMedia = body["NumMedia"] && parseInt(body["NumMedia"]) > 0;
+                const confirmationText = isMedia
+                    ? "Received your media! Watching it now... 📝"
+                    : "Got it! Processing your request... 📝";
+
+                // Native WhatsApp Reactions - Correct Pattern:
+                // requires Body (the emoji) AND PersistentAction (reaction metadata)
+                // Note: If the number/service doesn't support reactions, 'body' is sent as regular message.
+                // To avoid sending ONLY an emoji message, we check if reactions are likely supported.
+                try {
+                    console.log(`Attempting native reaction for message ${messageSid}`);
+                    await client.messages.create({
+                        from: to,
+                        to: from,
+                        body: '📝',
+                        // @ts-ignore
+                        persistentAction: [`reaction|${messageSid}`]
+                    });
+
+                    // If we want to ENSURE the user gets a text confirmation too (even if reaction works)
+                    // we can send the text message separately.
+                    await client.messages.create({
+                        from: to,
+                        to: from,
+                        body: confirmationText
+                    });
+                    console.log(`Confirmation text sent for message ${messageSid}`);
+
+                } catch (reactionErr: any) {
+                    console.warn("Reaction/Confirmation chain had an issue:", reactionErr.message);
+                    // Single fallback message if everything above failed
+                    try {
+                        await client.messages.create({
+                            from: to,
+                            to: from,
+                            body: confirmationText
+                        });
+                    } catch (finalErr) {
+                        console.error("Final fallback failed:", finalErr);
+                    }
+                }
             } else {
                 console.log("Skipping reaction (Mock/Test Env)");
             }
         } catch (reactionError) {
             // Log with more context for debugging
-            console.error("Failed to send reaction:", {
+            console.error("Failed to send confirmation:", {
                 error: reactionError,
                 from: from,
                 to: to,

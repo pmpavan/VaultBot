@@ -6,6 +6,7 @@ PROJECT_ID="vaultbot-486713"  # TODO: Replace with your GCP project ID
 REGION="us-central1"
 SERVICE_NAME_CLASSIFIER="vaultbot-classifier-worker"
 SERVICE_NAME_VIDEO="vaultbot-video-worker"
+SERVICE_NAME_SCRAPER="vaultbot-scraper-worker"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -26,6 +27,16 @@ fi
 if [ "$PROJECT_ID" == "your-gcp-project-id" ]; then
     echo "❌ Please set your GCP PROJECT_ID in this script"
     exit 1
+fi
+
+# Source .env from parent directory
+if [ -f ../.env ]; then
+    echo "Sourcing .env from parent directory..."
+    set -o allexport
+    source ../.env
+    set +o allexport
+else
+    echo "⚠️  .env file not found at ../.env! Proceeding with current environment..."
 fi
 
 # Set the project
@@ -59,24 +70,16 @@ gcloud run jobs create $SERVICE_NAME_CLASSIFIER \
     --memory 512Mi \
     --cpu 1 \
     --max-retries 0 \
-    --task-timeout 3600s \
-    --set-env-vars "SUPABASE_URL=${SUPABASE_URL}" \
-    --set-env-vars "SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}" \
-    --set-env-vars "TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}" \
-    --set-env-vars "TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}" \
-    --set-env-vars "TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}" \
+    --task-timeout 86400s \
+    --set-env-vars "SUPABASE_URL=${SUPABASE_URL},SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY},TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID},TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN},TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}" \
     || gcloud run jobs update $SERVICE_NAME_CLASSIFIER \
     --image gcr.io/$PROJECT_ID/$SERVICE_NAME_CLASSIFIER \
     --region $REGION \
     --memory 512Mi \
     --cpu 1 \
     --max-retries 0 \
-    --task-timeout 3600s \
-    --set-env-vars "SUPABASE_URL=${SUPABASE_URL}" \
-    --set-env-vars "SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}" \
-    --set-env-vars "TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}" \
-    --set-env-vars "TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}" \
-    --set-env-vars "TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}"
+    --task-timeout 86400s \
+    --set-env-vars "SUPABASE_URL=${SUPABASE_URL},SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY},TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID},TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN},TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}"
 
 echo -e "${GREEN}▶️  Starting Classifier Worker Job...${NC}"
 gcloud run jobs execute $SERVICE_NAME_CLASSIFIER --region $REGION
@@ -102,37 +105,61 @@ gcloud run jobs create $SERVICE_NAME_VIDEO \
     --memory 1Gi \
     --cpu 2 \
     --max-retries 0 \
-    --task-timeout 3600s \
-    --set-env-vars "SUPABASE_URL=${SUPABASE_URL}" \
-    --set-env-vars "SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}" \
-    --set-env-vars "TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}" \
-    --set-env-vars "TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}" \
-    --set-env-vars "TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}" \
-    --set-env-vars "OPENROUTER_API_KEY=${OPENROUTER_API_KEY}" \
+    --task-timeout 86400s \
+    --set-env-vars "SUPABASE_URL=${SUPABASE_URL},SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY},TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID},TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN},TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER},OPENROUTER_API_KEY=${OPENROUTER_API_KEY}" \
     || gcloud run jobs update $SERVICE_NAME_VIDEO \
     --image gcr.io/$PROJECT_ID/$SERVICE_NAME_VIDEO \
     --region $REGION \
     --memory 1Gi \
     --cpu 2 \
     --max-retries 0 \
-    --task-timeout 3600s \
-    --set-env-vars "SUPABASE_URL=${SUPABASE_URL}" \
-    --set-env-vars "SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}" \
-    --set-env-vars "TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}" \
-    --set-env-vars "TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}" \
-    --set-env-vars "TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}" \
-    --set-env-vars "OPENROUTER_API_KEY=${OPENROUTER_API_KEY}"
+    --task-timeout 86400s \
+    --set-env-vars "SUPABASE_URL=${SUPABASE_URL},SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY},TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID},TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN},TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER},OPENROUTER_API_KEY=${OPENROUTER_API_KEY}"
 
 echo -e "${GREEN}▶️  Starting Video Worker Job...${NC}"
 gcloud run jobs execute $SERVICE_NAME_VIDEO --region $REGION
 
+# Build and deploy Scraper Worker
+echo ""
+echo -e "${GREEN}🏗️  Building and pushing Scraper Worker to GCR...${NC}"
+cat > cloudbuild-scraper.yaml <<EOF
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-f', 'Dockerfile.scraper', '-t', 'gcr.io/$PROJECT_ID/$SERVICE_NAME_SCRAPER', '.']
+images:
+- 'gcr.io/$PROJECT_ID/$SERVICE_NAME_SCRAPER'
+timeout: 1200s
+EOF
+
+gcloud builds submit --config=cloudbuild-scraper.yaml --timeout=20m .
+
+echo -e "${GREEN}🚀 Deploying Scraper Worker as Cloud Run Job...${NC}"
+gcloud run jobs create $SERVICE_NAME_SCRAPER \
+    --image gcr.io/$PROJECT_ID/$SERVICE_NAME_SCRAPER \
+    --region $REGION \
+    --memory 512Mi \
+    --cpu 1 \
+    --max-retries 0 \
+    --task-timeout 86400s \
+    --set-env-vars "SUPABASE_URL=${SUPABASE_URL},SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY},TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID},TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN},TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}" \
+    || gcloud run jobs update $SERVICE_NAME_SCRAPER \
+    --image gcr.io/$PROJECT_ID/$SERVICE_NAME_SCRAPER \
+    --region $REGION \
+    --memory 512Mi \
+    --cpu 1 \
+    --max-retries 0 \
+    --task-timeout 86400s \
+    --set-env-vars "SUPABASE_URL=${SUPABASE_URL},SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY},TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID},TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN},TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}"
+
+echo -e "${GREEN}▶️  Starting Scraper Worker Job...${NC}"
+gcloud run jobs execute $SERVICE_NAME_SCRAPER --region $REGION
+
 echo ""
 echo -e "${GREEN}✅ Deployment complete!${NC}"
 echo ""
-echo "📊 Service URLs:"
-echo "   Classifier Worker: https://$SERVICE_NAME_CLASSIFIER-<hash>-$REGION.run.app"
-echo "   Video Worker: https://$SERVICE_NAME_VIDEO-<hash>-$REGION.run.app"
+echo "📊 Service status (view logs):"
+echo "   gcloud run jobs executions list --job=$SERVICE_NAME_CLASSIFIER --region=$REGION"
+echo "   gcloud run jobs executions list --job=$SERVICE_NAME_VIDEO --region=$REGION"
+echo "   gcloud run jobs executions list --job=$SERVICE_NAME_SCRAPER --region=$REGION"
 echo ""
-echo "🔍 View logs:"
-echo "   gcloud run logs read --service=$SERVICE_NAME_CLASSIFIER --region=$REGION"
-echo "   gcloud run logs read --service=$SERVICE_NAME_VIDEO --region=$REGION"
+

@@ -13,6 +13,7 @@ class VideoProcessingRequest(BaseModel):
     video_url: str = Field(..., description="URL to the video file (e.g., Twilio MediaUrl)")
     message_id: str = Field(..., description="WhatsApp message ID for tracking")
     auth_token: Optional[str] = Field(None, description="Authentication token for video download (e.g., Twilio auth)")
+    account_sid: Optional[str] = Field(None, description="Twilio Account SID for Basic Auth")
 
 
 class VideoProcessingResponse(BaseModel):

@@ -13,6 +13,7 @@ class VideoProcessorState(TypedDict):
     video_url: str
     message_id: str
     auth_token: str | None
+    account_sid: str | None
     video_summary: str | None
     error: str | None
 
@@ -47,7 +48,8 @@ class VideoProcessorNode:
             request = VideoProcessingRequest(
                 video_url=state["video_url"],
                 message_id=state["message_id"],
-                auth_token=state.get("auth_token")
+                auth_token=state.get("auth_token"),
+                account_sid=state.get("account_sid")
             )
             
             # Process video
