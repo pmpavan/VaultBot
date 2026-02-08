@@ -186,11 +186,68 @@ class VideoWorker:
             
             logger.info(f"Video job {job_id} processed successfully")
             
+            # --- Data Persistence Start ---
+            import hashlib
+            
+            # Generate a consistent hash for the video URL to handle deduplication
+            # In a real-world scenario, we might use a hash of the file content, 
+            # but for now, the URL (or MediaSid) is the best proxy.
+            url_hash = hashlib.sha256(video_url.encode()).hexdigest()
+            
+            # Check for existing metadata
+            existing = self.supabase.table('link_metadata').select('id, scrape_count').eq('url_hash', url_hash).maybe_single().execute()
+            
+            link_id = None
+            if existing.data:
+                link_id = existing.data['id']
+                # Increment count
+                self.supabase.table('link_metadata').update({
+                    'scrape_count': (existing.data.get('scrape_count') or 1) + 1,
+                    'last_updated_at': 'now()'
+                }).eq('id', link_id).execute()
+                logger.info(f"Re-used existing video metadata {link_id}")
+            else:
+                # Insert new metadata
+                # We store the video summary in the 'description' field or a structured content field
+                insert_result = self.supabase.table('link_metadata').insert({
+                    'url': video_url,
+                    'url_hash': url_hash,
+                    'platform': 'whatsapp_video', # specialized platform type
+                    'content_type': 'video',
+                    'extraction_strategy': 'frame_extraction',
+                    'title': 'Video Analysis', # Placeholder title
+                    'description': video_summary, # The generated summary goes here
+                    'thumbnail_url': None, # We could upload a frame here in the future
+                    'scrape_status': 'scraped'
+                }).execute()
+                
+                if insert_result.data:
+                    link_id = insert_result.data[0]['id']
+                    logger.info(f"Created new video metadata {link_id}")
+
+            # Create User Saved Link entry
+            user_phone = payload.get('From', '').replace('whatsapp:', '')
+            if link_id and user_phone:
+                # Use source_channel_id if present (group), otherwise user_phone (dm)
+                source_channel_id = job.get('source_channel_id') or user_phone
+                source_type = job.get('source_type') or 'dm'
+                
+                self.supabase.table('user_saved_links').insert({
+                    'link_id': link_id,
+                    'user_id': user_phone,
+                    'source_channel_id': source_channel_id,
+                    'source_type': source_type,
+                    'attributed_user_id': user_phone
+                }).execute()
+                logger.info(f"Linked video {link_id} to user {user_phone}")
+            # --- Data Persistence End ---
+
             # Update job with results
             self.supabase.table('jobs').update({
                 'result': {
                     'video_summary': video_summary,
-                    'content_type': 'video'
+                    'content_type': 'video',
+                    'link_id': link_id
                 },
                 'status': 'complete'
             }).eq('id', job_id).execute()
@@ -198,9 +255,9 @@ class VideoWorker:
             logger.info(f"Job {job_id} successfully completed and updated")
             
             # 5. Notify User
-            user_phone = payload.get('From', '')
-            if user_phone:
-                self.notify_user_success(user_phone, "Video Analysis")
+            user_phone_notify = payload.get('From', '')
+            if user_phone_notify:
+                self.notify_user_success(user_phone_notify, "Video Analysis")
                 
             return True
             
