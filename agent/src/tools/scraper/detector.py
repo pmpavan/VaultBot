@@ -6,7 +6,7 @@ extraction strategy.
 """
 
 import re
-from typing import Tuple
+from typing import Tuple, Optional
 from urllib.parse import urlparse
 
 from .types import ExtractionStrategy, ContentType
@@ -52,7 +52,7 @@ class PlatformDetector:
         'theguardian.com',
     ]
     
-    def detect(self, url: str, platform_hint: str | None = None) -> Tuple[str, ContentType, ExtractionStrategy]:
+    def detect(self, url: str, platform_hint: Optional[str] = None) -> Tuple[str, ContentType, ExtractionStrategy]:
         """
         Detect platform, content type, and recommended extraction strategy.
         

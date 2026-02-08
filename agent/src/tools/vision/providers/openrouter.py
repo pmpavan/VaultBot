@@ -3,7 +3,7 @@ import json
 from typing import Dict, Any, Optional
 from openai import OpenAI
 from ..types import VisionRequest, VisionResponse, VisionProviderError
-from ...prompts import PromptFactory, VisionAnalyzePrompt, VisionSystemPrompt
+from prompts import PromptFactory, VisionAnalyzePrompt, VisionSystemPrompt
 
 class OpenRouterVisionAdapter:
     """

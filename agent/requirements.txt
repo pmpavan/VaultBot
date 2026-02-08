@@ -13,9 +13,15 @@ python-dotenv==1.0.1
 # Tenacity for retry logic
 tenacity==8.2.3
 
+# Story 2.1: Vision API Integration
+openai>=1.0.0  # For OpenRouter Vision API
+
 # Story 2.2: YouTube & Social Link Scraper
 # Using latest stable version (2026.02.04 mentioned in story may not be released yet)
 yt-dlp>=2024.12.23
 beautifulsoup4==4.12.3
 requests==2.31.0
-lxml==5.1.0  # For faster BeautifulSoup parsing
+lxml>=5.3.0  # For faster BeautifulSoup parsing
+
+# Story 2.3: Video Frame Extraction
+opencv-python-headless>=4.8.0  # Headless version for server environments

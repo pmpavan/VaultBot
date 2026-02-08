@@ -33,5 +33,5 @@ class VisionService:
             raise e
 
 # Validating Imports for Factory
-from ...prompts import PromptFactory 
+from prompts import PromptFactory 
 # Ensure prompts are registered implicitly via import in __init__ or manual registration if dynamic

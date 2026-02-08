@@ -53,11 +53,13 @@ development_status:
   epic-2: in-progress
   2-1-vision-api-integration: done
   2-2-youtube-social-link-scraper: done
-  2-3-video-frame-extraction: backlog
+  2-3-video-frame-extraction: done
   2-4-image-post-extraction-social-media: backlog
   2-5-text-article-parser: backlog
   2-6-data-normalizer-agent: backlog
   2-7-natural-language-summary-generator: backlog
+  2-8-raw-image-processing: ready-for-dev
+  2-9-video-post-extraction-social-media: ready-for-dev
   epic-2-retrospective: optional
 
   # Epic 3: "Ask The Vault" (Search & Recall)

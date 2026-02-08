@@ -416,3 +416,40 @@ So that I can chat with the LLM or handle sensitive info without recording it.
 **When** received
 **Then** Clear the `paused` flag
 **And** React with ▶️
+
+# Story 2.8: Raw Image Processing
+
+### Story 2.8: Raw Image Processing
+
+As a User,
+I want to send a photo to the bot,
+So that I can capture visual information (receipts, fliers, menus) without typing.
+
+**Acceptance Criteria:**
+
+**Given** a WhatsApp Image message (MIME type image/jpeg, image/png)
+**When** the Ingestion Service processes it
+**Then** it MUST download the image to temporary storage
+**And** Send the image to the Vision API (Story 2.1) with a prompt to "Describe this image in detail and extract key information (text, objects, context)."
+**And** Store the resulting description in the `summary` field
+**And** Store structured metadata if applicable (e.g. if it looks like a receipt or event flyer)
+**Also** Support processing multiple images in a single message if WhatsApp supports it (otherwise handle each sequentially)
+
+# Story 2.9: Video Post Extraction (Social Media)
+
+### Story 2.9: Video Post Extraction (Social Media)
+
+As a User,
+I want the bot to "watch" the Instagram Reels, TikToks, and YouTube Shorts I send,
+So that I can get a detailed summary of the video content, not just the caption.
+
+**Acceptance Criteria:**
+
+**Given** a URL from Instagram, TikTok, or YouTube (Shorts/Video)
+**When** the Scraper Node processes it
+**Then** it MUST download the video content using `yt-dlp` (cookie compliant)
+**And** Extract 3-5 distinct keyframes (Reusing Story 2.3 logic)
+**And** Send these frames to the Vision API (Story 2.1)
+**And** Aggregate the frame descriptions into a single "Video Content Summary"
+**And** Combine this with the platform metadata (Title, Author, Caption from Story 2.2)
+**And** Handle standard video duration limits (e.g. process only first 2 minutes if long)

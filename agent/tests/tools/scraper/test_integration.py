@@ -118,12 +118,14 @@ class TestPlatformDetection:
     
     def test_evil_domain_not_detected_as_blog(self, service):
         """Test that 'medium.com.evil.site' is NOT detected as a blog."""
-        request = ScraperRequest(url="https://medium.com.evil.site/fake")
-        response = service.scrape(request)
+        # Use detector directly to check logic without triggering network call
+        # (Scraping would fail because domain doesn't exist)
+        url = "https://medium.com.evil.site/fake"
+        platform, content_type, strategy = service.detector.detect(url)
         
         # Should be detected as generic, not blog
-        assert response.platform == "generic"
-        assert response.extraction_strategy == ExtractionStrategy.OPENGRAPH
+        assert platform == "generic"
+        assert strategy == ExtractionStrategy.OPENGRAPH
 
 
 class TestGracefulDegradation:

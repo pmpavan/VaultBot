@@ -1,0 +1,6 @@
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-f', 'Dockerfile.classifier', '-t', 'gcr.io/vaultbot-486713/vaultbot-classifier-worker', '.']
+images:
+- 'gcr.io/vaultbot-486713/vaultbot-classifier-worker'
+timeout: 1200s
