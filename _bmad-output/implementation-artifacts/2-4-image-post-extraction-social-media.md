@@ -1,6 +1,6 @@
 # Story 2.4: Image Post Extraction (Social Media)
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -121,11 +121,17 @@ Each node module now exports a `create_[name]_graph()` function that returns a c
 ### Completion Notes List
 
 - Implemented Image Extractor Service with Instagram support via Instaloader.
-- Implemented TikTok and YouTube extractors as stubs for now (as per plan/constraints).
+- Implemented TikTok and YouTube extractors with proxy support.
 - Implemented Image Processor Node using Vision API.
 - Implemented Image Worker for async job processing.
 - Added Dockerfile and deployment scripts.
-- Added Unit Tests.
+- Added Unit Tests for all extractors.
+- **Code Review Fixes (Feb 9, 2026)**:
+  - Fixed ProxyManager missing `rotate_proxy()` method (prevented runtime crash)
+  - Added proxy support to TikTokExtractor and YouTubeCommunityExtractor (AC #8 compliance)
+  - Improved error handling in extractors (replaced silent exception swallowing with logging)
+  - Created comprehensive unit tests for Instagram, TikTok, and YouTube extractors
+  - Created integration test script for real-world validation
 
 ### File List
 
@@ -141,6 +147,11 @@ Each node module now exports a `create_[name]_graph()` function that returns a c
 - agent/src/image_worker.py
 - agent/Dockerfile.image
 - agent/deploy-gcp.sh
+- agent/src/tools/scraper/proxy/manager.py (updated)
 - agent/tests/test_image_service.py
 - agent/tests/test_image_processor.py
+- agent/tests/test_instagram_extractor.py (new)
+- agent/tests/test_tiktok_extractor.py (new)
+- agent/tests/test_youtube_extractor.py (new)
+- scripts/test_image_extractors_integration.py (new)
 - agent/requirements.txt

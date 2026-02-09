@@ -60,19 +60,41 @@ class ImageProcessorNode:
             # Step 2: Analyze images with Vision API
             vision_descriptions = []
             
-            for i, image_bytes in enumerate(extraction_response.images):
-                # Convert to base64
-                image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-                image_data_url = f"data:image/jpeg;base64,{image_base64}"
-                
-                # Create vision request
-                vision_request = VisionRequest(
-                    image_input=image_data_url,
-                    prompt="Describe this image in detail. Focus on objects, text, people, and context. Be concise but informative.",
-                    model_provider="openai"
-                )
-                
+            # Limit number of images to analyze to prevent timeouts/OOM
+            MAX_IMAGES = 5
+            images_to_process = extraction_response.images[:MAX_IMAGES]
+            
+            from PIL import Image
+            import io
+
+            for i, image_bytes in enumerate(images_to_process):
                 try:
+                    # Resize image if too large to save memory and token checking
+                    with Image.open(io.BytesIO(image_bytes)) as img:
+                        # Convert to RGB if needed
+                        if img.mode != 'RGB':
+                            img = img.convert('RGB')
+                            
+                        # Resize if larger than 1024x1024 (good enough for vision)
+                        max_size = (1024, 1024)
+                        img.thumbnail(max_size, Image.Resampling.LANCZOS)
+                        
+                        # Save to buffer
+                        buffer = io.BytesIO()
+                        img.save(buffer, format="JPEG", quality=85)
+                        processed_bytes = buffer.getvalue()
+
+                    # Convert to base64
+                    image_base64 = base64.b64encode(processed_bytes).decode('utf-8')
+                    image_data_url = f"data:image/jpeg;base64,{image_base64}"
+                    
+                    # Create vision request
+                    vision_request = VisionRequest(
+                        image_input=image_data_url,
+                        prompt="Describe this image in detail. Focus on objects, text, people, and context. Be concise but informative.",
+                        model_provider="openai"
+                    )
+                    
                     vision_response = self.vision_service.analyze(vision_request)
                     
                     # Extract description

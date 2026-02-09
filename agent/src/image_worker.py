@@ -6,6 +6,7 @@ Story: 2.4 - Image Post Extraction
 import os
 import sys
 import logging
+import signal
 from typing import Optional, Dict, Any
 from supabase import create_client, Client
 from twilio.rest import Client as TwilioClient
@@ -84,6 +85,18 @@ class ImageWorker:
         # Initialize image processor graph
         from nodes.image_processor import create_image_processor_graph
         self.image_processor = create_image_processor_graph()
+        
+        # Shutdown flag
+        self.shutdown_requested = False
+        
+        # Register signal handlers
+        signal.signal(signal.SIGTERM, self._handle_shutdown)
+        signal.signal(signal.SIGINT, self._handle_shutdown)
+
+    def _handle_shutdown(self, signum, frame):
+        """Handle shutdown signals."""
+        logger.info(f"Received signal {signum}, scheduling shutdown...")
+        self.shutdown_requested = True
     
     @retry(
         stop=stop_after_attempt(3),
@@ -198,10 +211,67 @@ class ImageWorker:
             
             logger.info(f"Image job {job_id} processed successfully")
             
+            # --- Data Persistence Start ---
+            import hashlib
+            
+            # Generate a consistent hash for the image URL to handle deduplication
+            url_hash = hashlib.sha256(url.encode()).hexdigest()
+            
+            # Check for existing metadata
+            existing = self.supabase.table('link_metadata').select('id, scrape_count').eq('url_hash', url_hash).limit(1).execute()
+            
+            link_id = None
+            if existing and existing.data and len(existing.data) > 0:
+                link_id = existing.data[0]['id']
+                # Increment count
+                self.supabase.table('link_metadata').update({
+                    'scrape_count': (existing.data[0].get('scrape_count') or 1) + 1,
+                    'last_updated_at': 'now()'
+                }).eq('id', link_id).execute()
+                logger.info(f"Re-used existing image metadata {link_id}")
+            else:
+                # Insert new metadata
+                metadata = result_state.get('metadata') or {}
+                
+                insert_result = self.supabase.table('link_metadata').insert({
+                    'url': url,
+                    'url_hash': url_hash,
+                    'platform': metadata.get('platform', 'unknown'),
+                    'content_type': 'image',
+                    'extraction_strategy': 'vision',
+                    'title': metadata.get('caption', 'Image Analysis')[:255] if metadata.get('caption') else 'Image Analysis',
+                    'description': image_summary, 
+                    'author': metadata.get('author'),
+                    'thumbnail_url': metadata.get('image_urls', [None])[0] if metadata.get('image_urls') else None,
+                    'scrape_status': 'scraped'
+                }).execute()
+                
+                if insert_result.data:
+                    link_id = insert_result.data[0]['id']
+                    logger.info(f"Created new image metadata {link_id}")
+
+            # Create User Saved Link entry
+            user_phone = payload.get('From', '').replace('whatsapp:', '')
+            if link_id and user_phone:
+                # Use source_channel_id if present (group), otherwise user_phone (dm)
+                source_channel_id = job.get('source_channel_id') or user_phone
+                source_type = job.get('source_type') or 'dm'
+                
+                self.supabase.table('user_saved_links').insert({
+                    'link_id': link_id,
+                    'user_id': user_phone,
+                    'source_channel_id': source_channel_id,
+                    'source_type': source_type,
+                    'attributed_user_id': user_phone
+                }).execute()
+                logger.info(f"Linked image {link_id} to user {user_phone}")
+            # --- Data Persistence End ---
+
             # Update job with results
             result_data = {
                 'image_summary': image_summary,
-                'content_type': 'image'
+                'content_type': 'image',
+                'link_id': link_id
             }
             if result_state.get('metadata'):
                 result_data['metadata'] = result_state['metadata']
@@ -214,9 +284,9 @@ class ImageWorker:
             logger.info(f"Job {job_id} successfully completed and updated")
             
             # Notify User
-            user_phone = payload.get('From', '')
-            if user_phone:
-                self.notify_user_success(user_phone, "Image Analysis")
+            user_phone_notify = payload.get('From', '')
+            if user_phone_notify:
+                self.notify_user_success(user_phone_notify, "Image Analysis")
                 
             return True
             
@@ -335,9 +405,13 @@ class ImageWorker:
         logger.info(f"Starting image worker loop (max_iterations={max_iterations})")
         iteration = 0
         
-        while True:
+        while not self.shutdown_requested:
             if max_iterations and iteration >= max_iterations:
                 logger.info(f"Reached max iterations ({max_iterations}), stopping")
+                break
+            
+            if self.shutdown_requested:
+                logger.info("Shutdown requested, stopping loop")
                 break
             
             processed = self.process_one_job()

@@ -1,5 +1,11 @@
 import unittest
 from unittest.mock import MagicMock, patch
+import sys
+import os
+
+# Add src to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
+
 from nodes.image_processor import ImageProcessorNode, ImageProcessorState
 from tools.image.types import ImageExtractionResponse
 
@@ -12,8 +18,15 @@ class TestImageProcessorNode(unittest.TestCase):
 
     def test_processing_flow(self):
         # Mock Extractor Response
+        # Create a valid 1x1 JPEG image
+        import io
+        from PIL import Image
+        img_byte_arr = io.BytesIO()
+        Image.new('RGB', (1, 1), color='red').save(img_byte_arr, format='JPEG')
+        valid_image_bytes = img_byte_arr.getvalue()
+
         mock_extraction = ImageExtractionResponse(
-            images=[b"fake_image_bytes"],
+            images=[valid_image_bytes],
             metadata={"caption": "Test Caption", "author": "test_user"},
             platform="instagram",
             image_urls=["http://example.com/img.jpg"]

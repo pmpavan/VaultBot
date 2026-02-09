@@ -6,6 +6,7 @@ Story: 2.3 - Video Frame Extraction
 import os
 import sys
 import logging
+import signal
 from typing import Optional
 from supabase import create_client, Client
 from twilio.rest import Client as TwilioClient
@@ -83,6 +84,18 @@ class VideoWorker:
         
         # Initialize video processor graph
         self.video_processor_graph = create_video_processor_graph(num_frames=5)
+        
+        # Shutdown flag
+        self.shutdown_requested = False
+        
+        # Register signal handlers
+        signal.signal(signal.SIGTERM, self._handle_shutdown)
+        signal.signal(signal.SIGINT, self._handle_shutdown)
+
+    def _handle_shutdown(self, signum, frame):
+        """Handle shutdown signals."""
+        logger.info(f"Received signal {signum}, scheduling shutdown...")
+        self.shutdown_requested = True
     
     @retry(
         stop=stop_after_attempt(3),
@@ -195,14 +208,14 @@ class VideoWorker:
             url_hash = hashlib.sha256(video_url.encode()).hexdigest()
             
             # Check for existing metadata
-            existing = self.supabase.table('link_metadata').select('id, scrape_count').eq('url_hash', url_hash).maybe_single().execute()
+            existing = self.supabase.table('link_metadata').select('id, scrape_count').eq('url_hash', url_hash).limit(1).execute()
             
             link_id = None
-            if existing.data:
-                link_id = existing.data['id']
+            if existing and existing.data and len(existing.data) > 0:
+                link_id = existing.data[0]['id']
                 # Increment count
                 self.supabase.table('link_metadata').update({
-                    'scrape_count': (existing.data.get('scrape_count') or 1) + 1,
+                    'scrape_count': (existing.data[0].get('scrape_count') or 1) + 1,
                     'last_updated_at': 'now()'
                 }).eq('id', link_id).execute()
                 logger.info(f"Re-used existing video metadata {link_id}")
@@ -214,7 +227,7 @@ class VideoWorker:
                     'url_hash': url_hash,
                     'platform': 'whatsapp_video', # specialized platform type
                     'content_type': 'video',
-                    'extraction_strategy': 'frame_extraction',
+                    'extraction_strategy': 'vision',
                     'title': 'Video Analysis', # Placeholder title
                     'description': video_summary, # The generated summary goes here
                     'thumbnail_url': None, # We could upload a frame here in the future
@@ -403,9 +416,13 @@ class VideoWorker:
         logger.info(f"Starting video worker loop (max_iterations={max_iterations})")
         iteration = 0
         
-        while True:
+        while not self.shutdown_requested:
             if max_iterations and iteration >= max_iterations:
                 logger.info(f"Reached max iterations ({max_iterations}), stopping")
+                break
+            
+            if self.shutdown_requested:
+                logger.info("Shutdown requested, stopping loop")
                 break
             
             processed = self.process_one_job()

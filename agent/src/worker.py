@@ -6,6 +6,7 @@ Story: 1.3 - Payload Parser & Classification
 import os
 import sys
 import logging
+import signal
 from typing import Optional
 from supabase import create_client, Client
 from twilio.rest import Client as TwilioClient
@@ -82,6 +83,18 @@ class ClassifierWorker:
         
         # Initialize classifier graph
         self.classifier_graph = create_classifier_graph()
+        
+        # Shutdown flag
+        self.shutdown_requested = False
+        
+        # Register signal handlers
+        signal.signal(signal.SIGTERM, self._handle_shutdown)
+        signal.signal(signal.SIGINT, self._handle_shutdown)
+
+    def _handle_shutdown(self, signum, frame):
+        """Handle shutdown signals."""
+        logger.info(f"Received signal {signum}, scheduling shutdown...")
+        self.shutdown_requested = True
     
     @retry(
         stop=stop_after_attempt(3),
@@ -272,9 +285,13 @@ class ClassifierWorker:
         logger.info(f"Starting worker loop (max_iterations={max_iterations})")
         iteration = 0
         
-        while True:
+        while not self.shutdown_requested:
             if max_iterations and iteration >= max_iterations:
                 logger.info(f"Reached max iterations ({max_iterations}), stopping")
+                break
+            
+            if self.shutdown_requested:
+                logger.info("Shutdown requested, stopping loop")
                 break
             
             processed = self.process_one_job()

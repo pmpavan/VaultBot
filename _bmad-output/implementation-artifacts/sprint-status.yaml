@@ -54,7 +54,7 @@ development_status:
   2-1-vision-api-integration: done
   2-2-youtube-social-link-scraper: done
   2-3-video-frame-extraction: done
-  2-4-image-post-extraction-social-media: review
+  2-4-image-post-extraction-social-media: done
   2-5-text-article-parser: backlog
   2-6-data-normalizer-agent: backlog
   2-7-natural-language-summary-generator: backlog

@@ -7,6 +7,7 @@ import os
 import sys
 import logging
 import hashlib
+import signal
 from typing import Optional
 from supabase import create_client, Client
 from twilio.rest import Client as TwilioClient
@@ -61,7 +62,20 @@ class ScraperWorker:
         self.twilio_from = os.environ.get('TWILIO_PHONE_NUMBER')
         
         self.scraper_service = ScraperService()
+        
+        # Shutdown flag
+        self.shutdown_requested = False
+        
+        # Register signal handlers
+        signal.signal(signal.SIGTERM, self._handle_shutdown)
+        signal.signal(signal.SIGINT, self._handle_shutdown)
+        
         logger.info("ScraperWorker initialized successfully")
+
+    def _handle_shutdown(self, signum, frame):
+        """Handle shutdown signals."""
+        logger.info(f"Received signal {signum}, scheduling shutdown...")
+        self.shutdown_requested = True
 
     def fetch_and_lock_link_job(self) -> Optional[dict]:
         """Fetch one pending link job and update to 'processing'."""
@@ -117,14 +131,14 @@ class ScraperWorker:
             url_hash = hashlib.sha256(url.encode()).hexdigest()
             
             # Check for existing metadata
-            existing = self.supabase.table('link_metadata').select('id, scrape_count').eq('url_hash', url_hash).maybe_single().execute()
+            existing = self.supabase.table('link_metadata').select('id, scrape_count').eq('url_hash', url_hash).limit(1).execute()
             
             link_id = None
-            if existing.data:
-                link_id = existing.data['id']
+            if existing and existing.data and len(existing.data) > 0:
+                link_id = existing.data[0]['id']
                 # Increment count
                 self.supabase.table('link_metadata').update({
-                    'scrape_count': (existing.data.get('scrape_count') or 1) + 1,
+                    'scrape_count': (existing.data[0].get('scrape_count') or 1) + 1,
                     'last_updated_at': 'now()'
                 }).eq('id', link_id).execute()
                 logger.info(f"Re-used existing metadata {link_id} for {url}")
@@ -230,8 +244,14 @@ class ScraperWorker:
     def run_loop(self):
         logger.info("Scraper worker polling started...")
         import time
-        while True:
+        logger.info("Scraper worker polling started...")
+        import time
+        while not self.shutdown_requested:
             try:
+                if self.shutdown_requested:
+                    logger.info("Shutdown requested, stopping loop")
+                    break
+                
                 processed = False
                 job = self.fetch_and_lock_link_job()
                 if job:

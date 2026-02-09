@@ -37,79 +37,88 @@ class InstagramExtractor(BaseExtractor):
 
     def extract(self, url: str) -> ImageExtractionResponse:
         """Extract images from Instagram post."""
-        self._configure_proxy()
         
-        shortcode = self._extract_shortcode(url)
-        if not shortcode:
-            raise ImageExtractionError(f"Could not extract shortcode from URL: {url}")
-            
-        try:
-            post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
-            
-            images = []
-            image_urls = []
-            
-            # handle carousel (sidecars) vs single image
-            if post.typename == 'GraphSidecar':
-                for node in post.get_sidecar_nodes():
-                    if not node.is_video:
-                        image_urls.append(node.display_url)
-            elif not post.is_video:
-                image_urls.append(post.url)
-            
-            if not image_urls:
-                 # It might be a video post, but maybe we can get a thumbnail? 
-                 # Story says "image post extraction", but fallback to thumbnail if video? 
-                 # Acceptance criteria says "download the image(s)". 
-                 # If it's a video, we probably shouldn't be using this extractor, 
-                 # or we should extract the thumbnail. 
-                 # For now, if no images found, raise error or return empty.
-                 # Let's extract thumbnail if it's a video but we were asked to extract images?
-                 # Actually, usually 2.4 is for Image Posts. 
-                 # If it's a video, 2.9 (Video Post Extraction) handles it.
-                 # But if the URL is ambiguous, we might have routed here.
-                 if post.is_video:
-                     image_urls.append(post.display_url) # Use thumbnail/display url
+        # Retry loop for proxy rotation
+        max_retries = 3
+        last_error = None
+        
+        for attempt in range(max_retries + 1):
+            try:
+                if attempt > 0:
+                    logger.info(f"Retrying Instagram extraction (attempt {attempt}/{max_retries}) with new proxy")
+                    self.proxy_manager.rotate_proxy()
+                    
+                self._configure_proxy()
+                
+                shortcode = self._extract_shortcode(url)
+                if not shortcode:
+                    raise ImageExtractionError(f"Could not extract shortcode from URL: {url}")
+                    
+                post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
+                
+                images = []
+                image_urls = []
+                
+                # handle carousel (sidecars) vs single image
+                if post.typename == 'GraphSidecar':
+                    for node in post.get_sidecar_nodes():
+                        if not node.is_video:
+                            image_urls.append(node.display_url)
+                elif not post.is_video:
+                    image_urls.append(post.url)
+                
+                if not image_urls:
+                     if post.is_video:
+                         image_urls.append(post.display_url) # Use thumbnail/display url
+    
+                # Download images
+                for img_url in image_urls:
+                    try:
+                        # Use the same proxy context for downloading
+                        resp = requests.get(
+                            img_url, 
+                            proxies=self.loader.context.proxies,
+                            timeout=30
+                        )
+                        resp.raise_for_status()
+                        images.append(resp.content)
+                    except Exception as e:
+                        logger.warning(f"Failed to download image {img_url}: {e}")
+                
+                if not images:
+                    raise ImageExtractionError("No images could be downloaded from post")
+    
+                return ImageExtractionResponse(
+                    images=images,
+                    metadata={
+                        'caption': post.caption,
+                        'author': post.owner_username,
+                        'likes': post.likes,
+                        'date': post.date_utc.isoformat() if post.date_utc else None,
+                        'hashtags': post.caption_hashtags,
+                        'platform': 'instagram'
+                    },
+                    platform='instagram',
+                    image_urls=image_urls
+                )
+                
+            except (instaloader.ConnectionException, ProxyError, requests.RequestException) as e:
+                 # This often indicates proxy issues or rate limits
+                 logger.warning(f"Instagram validation failed with proxy: {e}")
+                 last_error = e
+                 # Continue to next iteration to rotate proxy
+                 continue
+                 
+            except instaloader.QueryReturnedNotFoundException:
+                 raise ImageExtractionError("Instagram post not found")
+            except instaloader.LoginRequiredException:
+                 raise ImageExtractionError("Instagram login required (public access blocked)")
+            except Exception as e:
+                # Fatal errors
+                raise ImageExtractionError(f"Instagram extraction failed: {e}")
 
-            # Download images
-            for img_url in image_urls:
-                try:
-                    # Use the same proxy context for downloading
-                    resp = requests.get(
-                        img_url, 
-                        proxies=self.loader.context.proxies,
-                        timeout=30
-                    )
-                    resp.raise_for_status()
-                    images.append(resp.content)
-                except Exception as e:
-                    logger.warning(f"Failed to download image {img_url}: {e}")
-            
-            if not images:
-                raise ImageExtractionError("No images could be downloaded from post")
-
-            return ImageExtractionResponse(
-                images=images,
-                metadata={
-                    'caption': post.caption,
-                    'author': post.owner_username,
-                    'likes': post.likes,
-                    'date': post.date_utc.isoformat() if post.date_utc else None,
-                    'hashtags': post.caption_hashtags
-                },
-                platform='instagram',
-                image_urls=image_urls
-            )
-            
-        except instaloader.ConnectionException as e:
-             # This often indicates proxy issues or rate limits
-             raise ProxyError(f"Instagram connection failed: {e}")
-        except instaloader.QueryReturnedNotFoundException:
-             raise ImageExtractionError("Instagram post not found")
-        except instaloader.LoginRequiredException:
-             raise ImageExtractionError("Instagram login required (public access blocked)")
-        except Exception as e:
-            raise ImageExtractionError(f"Instagram extraction failed: {e}")
+        # If we get here, all retries failed
+        raise ProxyError(f"Instagram extraction failed after {max_retries} retries. Last error: {last_error}")
 
     def _extract_shortcode(self, url: str) -> Optional[str]:
         """Extract shortcode from Instagram URL."""

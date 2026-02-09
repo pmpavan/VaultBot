@@ -43,6 +43,18 @@ class ProxyManager:
         """Check if proxy is configured."""
         return self._proxy_url is not None
     
+    def rotate_proxy(self):
+        """
+        Rotate to the next proxy in the pool.
+        
+        Note: Current implementation uses a single proxy configuration.
+        This method is a no-op but prevents crashes when called by extractors.
+        Future enhancement: Support multiple proxies and rotation logic.
+        """
+        logger.debug("Proxy rotation requested (single proxy mode - no-op)")
+        # In a multi-proxy setup, this would cycle to the next proxy
+        pass
+    
     def health_check(self) -> bool:
         """
         Perform a health check on the proxy.

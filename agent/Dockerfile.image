@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     libxml2-dev \
     libxslt1-dev \
+    ffmpeg \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements file

@@ -1,39 +1,90 @@
 from .base import BaseExtractor
 from ..types import ImageExtractionResponse, ImageExtractionError
+from tools.scraper.proxy.manager import ProxyManager
+import logging
+
+logger = logging.getLogger(__name__)
 
 class TikTokExtractor(BaseExtractor):
     """TikTok image carousel extractor."""
     
+    def __init__(self):
+        self.proxy_manager = ProxyManager()
+    
     def extract(self, url: str) -> ImageExtractionResponse:
-        # Placeholder for now until we identify a reliable way to scrape TikTok images
-        # The research indicated this is tricky.
-        # For now, we'll raise an error or try a simple scraping approach.
-        # But since we don't have a reliable library, we should probably just stub it
-        # or use yt-dlp if it works.
-        
-        # Given the "Dumb Pipe" architecture and "Smart Consumer",
-        # the agent should be able to try yt-dlp.
-        
+        """Extract images from TikTok video/slideshow URL."""
         import yt_dlp
+        import requests
         
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
-            'skip_download': True, # We want to get info first
+            'skip_download': True,
             'extract_flat': True,
         }
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            try:
+        # Configure proxy for yt-dlp
+        proxy_url = self.proxy_manager.get_proxy_url()
+        if proxy_url:
+            ydl_opts['proxy'] = proxy_url
+            logger.info("TikTok extractor using proxy")
+        
+        # Prepare proxy dict for requests
+        proxies = None
+        if proxy_url:
+            proxies = {'http': proxy_url, 'https': proxy_url}
+        
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
-                # Check if it has 'formats' or 'url' pointing to image
-                # TikTok slideshows usually have 'formats' where vcodec='none' and acodec='none' maybe?
-                # Or look for 'thumbnails'.
                 
-                # If yt-dlp fails to detect images, we might raise UnsupportedPlatformError
-                pass
-            except Exception as e:
-                # If yt-dlp fails, raise specific error
-                raise ImageExtractionError(f"TikTok extraction failed: {e}")
+                # Check for images in 'thumbnails' or specific formats
+                # TikTok slideshows often expose images as thumbnails
+                images = []
+                image_urls = []
+                
+                # Strategy 1: Check for 'thumbnails' (often contains the images for slideshows)
+                # Note: This is an approximation. Real slideshow scraping is complex.
+                if 'thumbnails' in info and info['thumbnails']:
+                    # Get the largest thumbnail as a proxy for the image content if it's a single video
+                    # For slideshows, yt-dlp might return entries
+                    best_thumb = info['thumbnails'][-1]['url']
+                    image_urls.append(best_thumb)
+                
+                # Strategy 2: Check for 'entries' if it's a playlist/slideshow
+                if 'entries' in info:
+                    for entry in info['entries']:
+                         if 'thumbnails' in entry:
+                             best_thumb = entry['thumbnails'][-1]['url']
+                             image_urls.append(best_thumb)
+                             
+                if not image_urls:
+                    raise ImageExtractionError("No images found in TikTok URL")
+                
+                # Download images
+                for img_url in image_urls:
+                    try:
+                        resp = requests.get(img_url, proxies=proxies, timeout=30)
+                        resp.raise_for_status()
+                        images.append(resp.content)
+                    except Exception as e:
+                        logger.warning(f"Failed to download TikTok image {img_url}: {e}")
+                        # Continue to next image
+                
+                if not images:
+                    raise ImageExtractionError("Failed to download any images from TikTok")
 
-        raise ImageExtractionError("TikTok image extraction specific logic not fully implemented yet.")
+                return ImageExtractionResponse(
+                    images=images,
+                    metadata={
+                        'caption': info.get('description') or info.get('title'),
+                        'author': info.get('uploader'),
+                        'date': info.get('upload_date'),
+                        'platform_id': info.get('id')
+                    },
+                    platform='tiktok',
+                    image_urls=image_urls
+                )
+                
+        except Exception as e:
+            raise ImageExtractionError(f"TikTok extraction failed: {e}")
