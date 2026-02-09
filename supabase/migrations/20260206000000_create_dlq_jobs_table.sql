@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS dlq_jobs (
 ALTER TABLE dlq_jobs ENABLE ROW LEVEL SECURITY;
 
 -- Service role has full access to DLQ (for admin/monitoring)
+DROP POLICY IF EXISTS "Service role has full access to DLQ" ON dlq_jobs;
 CREATE POLICY "Service role has full access to DLQ"
   ON dlq_jobs
   FOR ALL

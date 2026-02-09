@@ -1,0 +1,29 @@
+# Use Python 3.14 slim image
+FROM python:3.14-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+# Trafilatura and Newspaper4k require lxml dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libxml2-dev \
+    libxslt1-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements file
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy source code
+COPY src/ ./src/
+
+# Set Python path
+ENV PYTHONPATH=/app
+
+# Run the article worker
+CMD ["python", "src/article_worker.py"]

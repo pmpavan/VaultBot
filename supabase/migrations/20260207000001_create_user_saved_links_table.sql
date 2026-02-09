@@ -32,6 +32,7 @@ create index idx_user_saved_links_attributed_user on public.user_saved_links(att
 alter table public.user_saved_links enable row level security;
 
 -- Service role: Full access for backend operations
+drop policy if exists "Service role can manage user_saved_links" on public.user_saved_links;
 create policy "Service role can manage user_saved_links"
   on public.user_saved_links
   for all
@@ -40,6 +41,7 @@ create policy "Service role can manage user_saved_links"
   with check (true);
 
 -- User policy: See own saves + group saves (FR-15: Hybrid Search Scope)
+drop policy if exists "Users can view their saved links and group links" on public.user_saved_links;
 create policy "Users can view their saved links and group links"
   on public.user_saved_links
   for select

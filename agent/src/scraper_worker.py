@@ -86,6 +86,8 @@ class ScraperWorker:
                 'content_type', 'link'
             ).eq(
                 'status', 'pending'
+            ).neq(
+                'platform', 'generic'
             ).order('created_at').limit(1).execute()
             
             if not result.data:

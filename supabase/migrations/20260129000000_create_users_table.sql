@@ -11,6 +11,7 @@ create table if not exists public.users (
 alter table public.users enable row level security;
 
 -- Service role policies: Full access for backend operations
+drop policy if exists "Service role can manage users" on public.users;
 create policy "Service role can manage users"
   on public.users
   for all

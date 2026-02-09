@@ -16,6 +16,7 @@ create table if not exists public.jobs (
 alter table public.jobs enable row level security;
 
 -- Service role policies: Full access for backend operations
+drop policy if exists "Service role can manage jobs" on public.jobs;
 create policy "Service role can manage jobs"
   on public.jobs
   for all
