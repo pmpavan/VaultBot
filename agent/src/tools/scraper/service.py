@@ -24,6 +24,7 @@ from .types import (
 )
 from .detector import PlatformDetector
 from .extractors import YtDlpExtractor, OpenGraphExtractor, PassthroughHandler
+from .extractors.youtube_api import YouTubeAPIExtractor
 from .proxy import ProxyManager
 
 logger = logging.getLogger(__name__)
@@ -48,12 +49,15 @@ class ScraperService:
         # Initialize extractors
         proxy_url = self.proxy_manager.get_proxy_url()
         self.ytdlp_extractor = YtDlpExtractor(proxy_url=proxy_url, timeout=ytdlp_timeout)
+        self.youtube_api_extractor = YouTubeAPIExtractor()  # Uses YOUTUBE_API_KEY env var
         self.opengraph_extractor = OpenGraphExtractor(timeout=opengraph_timeout)
         self.passthrough_handler = PassthroughHandler()
         
         logger.info("ScraperService initialized")
         if proxy_url:
-            logger.info("Proxy enabled for social media scraping")
+            logger.info("Proxy enabled for social media scraping (except YouTube)")
+        if os.getenv('YOUTUBE_API_KEY'):
+            logger.info("YouTube Data API enabled")
     
     @retry(
         stop=stop_after_attempt(3),
@@ -91,7 +95,15 @@ class ScraperService:
         
         # Step 2: Route to appropriate extractor
         try:
-            if strategy == ExtractionStrategy.YTDLP:
+            # For YouTube, try API first (no bot detection), fallback to yt-dlp
+            if platform.lower() == 'youtube' and os.getenv('YOUTUBE_API_KEY'):
+                try:
+                    logger.info("Using YouTube Data API (primary)")
+                    response = self.youtube_api_extractor.extract(request.url)
+                except ScraperError as e:
+                    logger.warning(f"YouTube API failed, falling back to yt-dlp: {e}")
+                    response = self.ytdlp_extractor.extract(request.url, platform)
+            elif strategy == ExtractionStrategy.YTDLP:
                 response = self.ytdlp_extractor.extract(request.url, platform)
             elif strategy == ExtractionStrategy.OPENGRAPH:
                 response = self.opengraph_extractor.extract(request.url)

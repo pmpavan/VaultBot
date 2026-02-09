@@ -12,7 +12,8 @@ from pydantic import BaseModel, Field, HttpUrl
 
 class ExtractionStrategy(str, Enum):
     """Strategy used to extract metadata from a URL."""
-    YTDLP = "ytdlp"  # Social media (Instagram, TikTok, YouTube)
+    API = "api"  # Official platform APIs (YouTube Data API)
+    YTDLP = "ytdlp"  # Social media (Instagram, TikTok, YouTube fallback)
     OPENGRAPH = "opengraph"  # Generic URLs with OpenGraph tags
     PASSTHROUGH = "passthrough"  # Blog/news articles (text extraction pending)
     VISION = "vision"  # Image analysis (Story 2.4)
