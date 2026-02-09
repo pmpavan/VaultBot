@@ -59,11 +59,25 @@ class YtDlpExtractor:
             'extract_flat': False,  # Get full metadata
             'skip_download': True,  # Don't download video
             'socket_timeout': self.timeout,
+            # User-agent spoofing to avoid bot detection
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
         
-        # Add proxy if configured
-        if self.proxy_url:
+        # IMPORTANT: BrightData blocks YouTube, so we skip proxy for YouTube
+        # Other platforms (Instagram, TikTok) can use proxy
+        if self.proxy_url and platform.lower() != 'youtube':
             ydl_opts['proxy'] = self.proxy_url
+            logger.info(f"Using proxy for {platform}")
+        elif platform.lower() == 'youtube':
+            logger.info("Skipping proxy for YouTube (BrightData blocks YouTube)")
+        
+        # Add cookies if available (for YouTube bot detection bypass)
+        cookies_file = os.getenv('YOUTUBE_COOKIES_FILE', '/app/cookies.txt')
+        if os.path.exists(cookies_file):
+            ydl_opts['cookiefile'] = cookies_file
+            logger.info(f"Using cookies from {cookies_file}")
+        else:
+            logger.warning(f"No cookies file found at {cookies_file}. YouTube may block requests.")
         
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
