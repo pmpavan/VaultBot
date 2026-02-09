@@ -63,13 +63,14 @@ class YtDlpExtractor:
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
         
-        # IMPORTANT: BrightData blocks YouTube, so we skip proxy for YouTube
-        # Other platforms (Instagram, TikTok) can use proxy
-        if self.proxy_url and platform.lower() != 'youtube':
+        # IMPORTANT: BrightData blocks YouTube and Instagram (Streaming Media)
+        # Only use proxy for TikTok and other platforms
+        blocked_platforms = ['youtube', 'instagram']
+        if self.proxy_url and platform.lower() not in blocked_platforms:
             ydl_opts['proxy'] = self.proxy_url
             logger.info(f"Using proxy for {platform}")
-        elif platform.lower() == 'youtube':
-            logger.info("Skipping proxy for YouTube (BrightData blocks YouTube)")
+        elif platform.lower() in blocked_platforms:
+            logger.info(f"Skipping proxy for {platform} (BrightData blocks Streaming Media)")
         
         # Add cookies if available (for YouTube bot detection bypass)
         cookies_file = os.getenv('YOUTUBE_COOKIES_FILE', '/app/cookies.txt')

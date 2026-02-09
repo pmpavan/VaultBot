@@ -55,7 +55,7 @@ class ScraperService:
         
         logger.info("ScraperService initialized")
         if proxy_url:
-            logger.info("Proxy enabled for social media scraping (except YouTube)")
+            logger.info("Proxy enabled for TikTok (YouTube/Instagram blocked by BrightData)")
         if os.getenv('YOUTUBE_API_KEY'):
             logger.info("YouTube Data API enabled")
     
