@@ -9,13 +9,16 @@ import logging
 import signal
 from typing import Optional
 from supabase import create_client, Client
-from twilio.rest import Client as TwilioClient
+from supabase import create_client, Client
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from messaging_factory import get_messaging_provider
 
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from nodes.video_processor import create_video_processor_graph, VideoProcessorState
+from agent.src.tools.normalizer.service import NormalizerService
+from agent.src.tools.normalizer.types import NormalizerRequest
 
 # Configure logging
 logging.basicConfig(
@@ -70,20 +73,17 @@ class VideoWorker:
             logger.error(f"Failed to initialize Supabase client: {e}")
             raise
         
-        # Initialize Twilio client
+        # Initialize Messaging Provider
         try:
-            self.twilio_client = TwilioClient(
-                os.environ.get('TWILIO_ACCOUNT_SID'),
-                os.environ.get('TWILIO_AUTH_TOKEN')
-            )
-            self.twilio_from = os.environ.get('TWILIO_PHONE_NUMBER')
-            logger.info("Twilio client initialized successfully")
+            self.messaging = get_messaging_provider()
+            logger.info("Messaging provider initialized successfully")
         except Exception as e:
-            logger.error(f"Failed to initialize Twilio client: {e}")
+            logger.error(f"Failed to initialize messaging provider: {e}")
             raise
         
         # Initialize video processor graph
         self.video_processor_graph = create_video_processor_graph(num_frames=5)
+        self.normalizer_service = NormalizerService()
         
         # Shutdown flag
         self.shutdown_requested = False
@@ -180,7 +180,9 @@ class VideoWorker:
                 'video_url': video_url,
                 'message_id': payload.get('MessageSid', job_id),
                 'auth_token': auth_token,
-                'account_sid': self.twilio_client.account_sid,
+                'auth_token': auth_token,
+                'account_sid': os.environ.get('TWILIO_ACCOUNT_SID'), # Pass explicitly or get from messaging service if exposed
+                'video_summary': None,
                 'video_summary': None,
                 'error': None
             }
@@ -198,6 +200,19 @@ class VideoWorker:
                 raise Exception("No video summary generated")
             
             logger.info(f"Video job {job_id} processed successfully")
+
+            # --- Normalize Data ---
+            normalized_data = None
+            try:
+                norm_req = NormalizerRequest(
+                    title="Video Analysis", # Placeholder, ideally we'd have a title from metadata
+                    description=video_summary,
+                    raw_content=None,
+                    source_url=video_url
+                )
+                normalized_data = self.normalizer_service.normalize(norm_req)
+            except Exception as e:
+                logger.warning(f"Normalization failed for video {video_url}: {e}")
             
             # --- Data Persistence Start ---
             import hashlib
@@ -214,10 +229,21 @@ class VideoWorker:
             if existing and existing.data and len(existing.data) > 0:
                 link_id = existing.data[0]['id']
                 # Increment count
-                self.supabase.table('link_metadata').update({
+                # Prepare update data
+                update_data = {
                     'scrape_count': (existing.data[0].get('scrape_count') or 1) + 1,
                     'last_updated_at': 'now()'
-                }).eq('id', link_id).execute()
+                }
+                
+                # Update normalized fields
+                if normalized_data:
+                    update_data.update({
+                        'normalized_category': normalized_data.category.value,
+                        'normalized_price_range': normalized_data.price_range.value if normalized_data.price_range else None,
+                        'normalized_tags': normalized_data.tags
+                    })
+                    
+                self.supabase.table('link_metadata').update(update_data).eq('id', link_id).execute()
                 logger.info(f"Re-used existing video metadata {link_id}")
             else:
                 # Insert new metadata
@@ -231,7 +257,10 @@ class VideoWorker:
                     'title': 'Video Analysis', # Placeholder title
                     'description': video_summary, # The generated summary goes here
                     'thumbnail_url': None, # We could upload a frame here in the future
-                    'scrape_status': 'scraped'
+                    'scrape_status': 'scraped',
+                    'normalized_category': normalized_data.category.value if normalized_data else None,
+                    'normalized_price_range': normalized_data.price_range.value if normalized_data and normalized_data.price_range else None,
+                    'normalized_tags': normalized_data.tags if normalized_data else None
                 }).execute()
                 
                 if insert_result.data:
@@ -299,18 +328,7 @@ class VideoWorker:
                 to = f"whatsapp:{to}"
             
             # Ensure sender is formatted for WhatsApp if recipient is
-            from_number = self.twilio_from
-            if to.startswith('whatsapp:') and not from_number.startswith('whatsapp:'):
-                from_number = f"whatsapp:{from_number}"
-            
-            msg = f"✅ *Video Processed!* \n\n"
-            msg += f"Your video has been analyzed and the summary is ready in your Vault. 🎥"
-            
-            self.twilio_client.messages.create(
-                from_=from_number,
-                to=to,
-                body=msg
-            )
+            self.messaging.send_message(to=to, body=msg)
             logger.info(f"Success message sent to {to}")
         except Exception as e:
             logger.error(f"Failed to send success message: {e}")
@@ -362,23 +380,7 @@ class VideoWorker:
                 return
             
             # Ensure recipient has whatsapp prefix if needed (though payload usually has it)
-            if not user_phone.startswith('whatsapp:') and len(user_phone) > 10:
-                 # heuristic: if it looks like a phone number but missing prefix
-                 user_phone = f"whatsapp:{user_phone}"
-
-            # Ensure sender is formatted for WhatsApp if recipient is
-            from_number = self.twilio_from
-            if user_phone.startswith('whatsapp:') and not from_number.startswith('whatsapp:'):
-                from_number = f"whatsapp:{from_number}"
-            
-            # Get user-friendly message
-            message = self.ERROR_MESSAGES.get(error_category, self.ERROR_MESSAGES['unknown'])
-            
-            self.twilio_client.messages.create(
-                from_=from_number,
-                to=user_phone,
-                body=f"⚠️ {message}"
-            )
+            self.messaging.send_message(to=user_phone, body=f"⚠️ {message}")
             
             logger.info(f"Sent failure notification to {user_phone} for job {job['id']}")
             

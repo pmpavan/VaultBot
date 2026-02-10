@@ -9,8 +9,9 @@ import logging
 import signal
 from typing import Optional
 from supabase import create_client, Client
-from twilio.rest import Client as TwilioClient
+from supabase import create_client, Client
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from messaging_factory import get_messaging_provider
 
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -41,9 +42,8 @@ class ClassifierWorker:
         required_env_vars = {
             'SUPABASE_URL': 'Supabase project URL',
             'SUPABASE_SERVICE_ROLE_KEY': 'Supabase service role key',
-            'TWILIO_ACCOUNT_SID': 'Twilio account SID',
-            'TWILIO_AUTH_TOKEN': 'Twilio auth token',
-            'TWILIO_PHONE_NUMBER': 'Twilio phone number'
+            'SUPABASE_URL': 'Supabase project URL',
+            'SUPABASE_SERVICE_ROLE_KEY': 'Supabase service role key'
         }
         
         missing = []
@@ -70,15 +70,12 @@ class ClassifierWorker:
             raise
         
         # Initialize Twilio client
+        # Initialize Messaging Provider
         try:
-            self.twilio_client = TwilioClient(
-                os.environ.get('TWILIO_ACCOUNT_SID'),
-                os.environ.get('TWILIO_AUTH_TOKEN')
-            )
-            self.twilio_from = os.environ.get('TWILIO_PHONE_NUMBER')
-            logger.info("Twilio client initialized successfully")
+            self.messaging = get_messaging_provider()
+            logger.info("Messaging provider initialized successfully")
         except Exception as e:
-            logger.error(f"Failed to initialize Twilio client: {e}")
+            logger.error(f"Failed to initialize messaging provider: {e}")
             raise
         
         # Initialize classifier graph
@@ -236,18 +233,7 @@ class ClassifierWorker:
                  user_phone = f"whatsapp:{user_phone}"
 
             # Ensure sender is formatted for WhatsApp if recipient is
-            from_number = self.twilio_from
-            if user_phone.startswith('whatsapp:') and not from_number.startswith('whatsapp:'):
-                from_number = f"whatsapp:{from_number}"
-            
-            # Get user-friendly message
-            message = self.ERROR_MESSAGES.get(error_category, self.ERROR_MESSAGES['unknown'])
-            
-            self.twilio_client.messages.create(
-                from_=from_number,
-                to=user_phone,
-                body=f"⚠️ {message}"
-            )
+            self.messaging.send_message(to=user_phone, body=f"⚠️ {message}")
             
             logger.info(f"Sent failure notification to {user_phone} for job {job['id']}")
             

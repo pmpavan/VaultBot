@@ -1,6 +1,6 @@
 # Story 2.6: Data Normalizer Agent
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -23,35 +23,35 @@ So that we can run SQL queries on `price` and `category`.
 
 ## Tasks / Subtasks
 
-- [ ] **Design Category Taxonomy** (AC: 4)
-  - [ ] Define comprehensive category ENUM (Food, Entertainment, Travel, Shopping, Education, Health, etc.)
-  - [ ] Document category definitions and examples
-  - [ ] Handle edge cases (e.g., hybrid content like "cooking tutorial video")
+- [x] **Design Category Taxonomy** (AC: 4)
+  - [x] Define comprehensive category ENUM (Food, Entertainment, Travel, Shopping, Education, Health, etc.)
+  - [x] Document category definitions and examples
+  - [x] Handle edge cases (e.g., hybrid content like "cooking tutorial video")
 
-- [ ] **Create Normalizer Prompt** (AC: 1, 2, 3)
-  - [ ] Design structured prompt requesting JSON output with category/price/tags
-  - [ ] Include category taxonomy in prompt
-  - [ ] Add examples for few-shot learning
-  - [ ] Enforce strict JSON schema validation
+- [x] **Create Normalizer Prompt** (AC: 1, 2, 3)
+  - [x] Design structured prompt requesting JSON output with category/price/tags
+  - [x] Include category taxonomy in prompt
+  - [x] Add examples for few-shot learning
+  - [x] Enforce strict JSON schema validation
 
-- [ ] **Implement Normalizer Tool** (AC: 1-8)
-  - [ ] Create `agent/src/tools/normalizer/` module
-  - [ ] Implement `NormalizerService` that calls LLM with structured prompt
-  - [ ] Parse and validate LLM response against schema
-  - [ ] Handle LLM failures gracefully (retry logic, fallback to defaults)
-  - [ ] Support batch normalization for efficiency
+- [x] **Implement Normalizer Tool** (AC: 1-8)
+  - [x] Create `agent/src/tools/normalizer/` module
+  - [x] Implement `NormalizerService` that calls LLM with structured prompt
+  - [x] Parse and validate LLM response against schema
+  - [x] Handle LLM failures gracefully (retry logic, fallback to defaults)
+  - [x] Support batch normalization for efficiency
 
-- [ ] **Integrate with Worker Pipeline** (AC: 7)
-  - [ ] Update existing workers (scraper, video, image, article) to call normalizer
-  - [ ] Normalizer should run AFTER metadata extraction but BEFORE final persistence
-  - [ ] Update `link_metadata` table with normalized fields
-  - [ ] Ensure idempotency (don't re-normalize if already normalized)
+- [x] **Integrate with Worker Pipeline** (AC: 7)
+  - [x] Update existing workers (scraper, video, image, article) to call normalizer
+  - [x] Normalizer should run AFTER metadata extraction but BEFORE final persistence
+  - [x] Update `link_metadata` table with normalized fields
+  - [x] Ensure idempotency (don't re-normalize if already normalized)
 
-- [ ] **Testing** (AC: 1-8)
-  - [ ] Unit tests for normalizer with various input descriptions
-  - [ ] Test edge cases: ambiguous descriptions, missing context, multi-category content
-  - [ ] Integration test with full worker pipeline
-  - [ ] Validate database persistence
+- [x] **Testing** (AC: 1-8)
+  - [x] Unit tests for normalizer with various input descriptions
+  - [x] Test edge cases: ambiguous descriptions, missing context, multi-category content
+  - [x] Integration test with full worker pipeline
+  - [x] Validate database persistence
 
 ## Dev Notes
 
@@ -228,12 +228,13 @@ normalized_tags jsonb,               -- Story 2.6: Array of tags
 2. **Use Few-Shot Prompts:** Include 5-10 examples in normalizer prompt for better accuracy
 3. **Validate LLM Output:** Use Pydantic models to validate JSON structure before database save
 4. **Handle Failures Gracefully:** If normalizer errors, log warning and continue with null values (don't block pipeline)
-5. **Batch Processing:** If calling normalizer for multiple items, batch requests to reduce API calls
-6. **Model Selection:** Use GPT-4o-mini (fast, cheap, good at structured extraction)
-7. **Price Range Precision:** Strictly enforce `$`, `$$`, `$$$`, `$$$$`, or NULL - no other values
-8. **Tag Quality:** Limit tags to 3-7 semantic descriptors (avoid generic tags like "content" or "video")
-9. **Integration Point:** Call normalizer AFTER metadata extraction, BEFORE final persistence
-10. **Idempotency:** Check if `normalized_category` already exists before re-normalizing
+5. **Status**: Done
+6. **Batch Processing:** If calling normalizer for multiple items, batch requests to reduce API calls
+7. **Model Selection:** Use GPT-4o-mini (fast, cheap, good at structured extraction)
+8. **Price Range Precision:** Strictly enforce `$`, `$$`, `$$$`, `$$$$`, or NULL - no other values
+9. **Tag Quality:** Limit tags to 3-7 semantic descriptors (avoid generic tags like "content" or "video")
+10. **Integration Point:** Call normalizer AFTER metadata extraction, BEFORE final persistence
+11. **Idempotency:** Check if `normalized_category` already exists before re-normalizing
 
 **🚫 MUST NOT DO:**
 
@@ -340,3 +341,24 @@ python3 scripts/test_normalizer_integration.py
 ### Completion Notes List
 
 ### File List
+- _bmad-output/implementation-artifacts/2-6-data-normalizer-agent.md
+- _bmad-output/implementation-artifacts/sprint-status.yaml
+- _bmad-output/planning-artifacts/architecture.md
+- agent/src/article_worker.py
+- agent/src/image_worker.py
+- agent/src/scraper_worker.py
+- agent/src/video_worker.py
+- agent/src/worker.py
+- agent/tests/test_worker_integration.py
+- agent/src/messaging_factory.py
+- agent/src/prompts/normalizer.py
+- agent/src/tools/normalizer/service.py
+- agent/src/tools/normalizer/taxonomy.py
+- agent/src/tools/normalizer/types.py
+- agent/src/tools/normalizer/__init__.py
+- agent/tests/test_normalizer_service.py
+- supabase/migrations/20260210000000_add_normalized_fields_to_link_metadata.sql
+- agent/src/interfaces/messaging.py
+- agent/src/interfaces/__init__.py
+- agent/src/infrastructure/twilio_adapter.py
+- agent/src/infrastructure/__init__.py

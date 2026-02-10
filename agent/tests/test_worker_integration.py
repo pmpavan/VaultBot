@@ -29,20 +29,20 @@ class TestClassifierWorkerIntegration(unittest.TestCase):
         os.environ['TWILIO_AUTH_TOKEN'] = 'test-token'
         os.environ['TWILIO_PHONE_NUMBER'] = '+1234567890'
     
-    @patch('worker.TwilioClient')
+    @patch('worker.get_messaging_provider')
     @patch('worker.create_client')
-    def test_worker_initialization_success(self, mock_supabase, mock_twilio):
+    def test_worker_initialization_success(self, mock_supabase, mock_messaging_factory):
         """Test worker initializes successfully with valid env vars."""
         worker = ClassifierWorker()
         
         self.assertIsNotNone(worker.supabase)
-        self.assertIsNotNone(worker.twilio_client)
+        self.assertIsNotNone(worker.messaging)
         mock_supabase.assert_called_once()
-        mock_twilio.assert_called_once()
+        mock_messaging_factory.assert_called_once()
     
-    @patch('worker.TwilioClient')
+    @patch('worker.get_messaging_provider')
     @patch('worker.create_client')
-    def test_worker_initialization_missing_env_vars(self, mock_supabase, mock_twilio):
+    def test_worker_initialization_missing_env_vars(self, mock_supabase, mock_messaging_factory):
         """Test worker raises error when env vars are missing."""
         del os.environ['SUPABASE_URL']
         
@@ -54,9 +54,9 @@ class TestClassifierWorkerIntegration(unittest.TestCase):
         # Restore env var
         os.environ['SUPABASE_URL'] = 'https://test.supabase.co'
     
-    @patch('worker.TwilioClient')
+    @patch('worker.get_messaging_provider')
     @patch('worker.create_client')
-    def test_fetch_and_lock_job_success(self, mock_supabase, mock_twilio):
+    def test_fetch_and_lock_job_success(self, mock_supabase, mock_messaging_factory):
         """Test fetching and locking a job successfully."""
         # Setup mock
         mock_client = MagicMock()
@@ -74,9 +74,9 @@ class TestClassifierWorkerIntegration(unittest.TestCase):
         self.assertEqual(job['id'], 'job-123')
         mock_client.rpc.assert_called_with('claim_pending_job', {})
     
-    @patch('worker.TwilioClient')
+    @patch('worker.get_messaging_provider')
     @patch('worker.create_client')
-    def test_fetch_and_lock_job_empty_queue(self, mock_supabase, mock_twilio):
+    def test_fetch_and_lock_job_empty_queue(self, mock_supabase, mock_messaging_factory):
         """Test fetching job when queue is empty."""
         # Setup mock
         mock_client = MagicMock()
@@ -92,9 +92,9 @@ class TestClassifierWorkerIntegration(unittest.TestCase):
         
         self.assertIsNone(job)
     
-    @patch('worker.TwilioClient')
+    @patch('worker.get_messaging_provider')
     @patch('worker.create_client')
-    def test_classify_and_update_success(self, mock_supabase, mock_twilio):
+    def test_classify_and_update_success(self, mock_supabase, mock_messaging_factory):
         """Test successful job classification and database update."""
         # Setup mocks
         mock_client = MagicMock()
@@ -126,9 +126,9 @@ class TestClassifierWorkerIntegration(unittest.TestCase):
         self.assertEqual(update_data['status'], 'pending')
     
     
-    @patch('worker.TwilioClient')
+    @patch('worker.get_messaging_provider')
     @patch('worker.create_client')
-    def test_process_one_job_end_to_end(self, mock_supabase, mock_twilio):
+    def test_process_one_job_end_to_end(self, mock_supabase, mock_messaging_factory):
         """Test complete job processing flow."""
         # Setup mocks
         mock_client = MagicMock()

@@ -90,6 +90,8 @@ gcloud run jobs create vaultbot-article-worker --source=agent/ --region=us-centr
 *   **Video Worker (`video_worker.py`):** Polls for `content_type='video'` → Extracts frames → Analyzes via Vision API
 *   **Image Worker (`image_worker.py`):** Polls for `content_type='image'` → Analyzes via Vision API
 *   **Article Worker (`article_worker.py`):** Polls for `content_type='article'` → Extracts text → Parses metadata
+*   **Shared Services:**
+    *   **Data Normalizer (`agent/src/tools/normalizer`):** Standardizes metadata into `Category`, `Price`, and `Tags` using LLM. Used by all workers.
 
 **Polling Pattern:**
 ```python
@@ -197,8 +199,9 @@ CREATE TABLE link_metadata (
   scrape_status TEXT DEFAULT 'scraped',
   scrape_count INTEGER DEFAULT 1,        -- How many users saved this URL
   ai_summary TEXT,                       -- Epic 2 Story 2.7 (planned)
-  normalized_category TEXT,              -- Epic 2 Story 2.6 (planned)
-  normalized_tags TEXT[],                -- Epic 2 Story 2.6 (planned)
+  normalized_category TEXT,              -- Epic 2 Story 2.6 (implemented)
+  normalized_price_range TEXT,           -- Epic 2 Story 2.6 (implemented)
+  normalized_tags TEXT[],                -- Epic 2 Story 2.6 (implemented)
   embedding VECTOR(1536),                -- Epic 3 Story 3.1 (planned)
   created_at TIMESTAMPTZ DEFAULT NOW(),
   last_updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -293,6 +296,7 @@ $$ LANGUAGE SQL;
 **Processing:** LangGraph Cloud (or Cloud Run)
 *   **Deploy:** Dockerized Python Agent.
 *   **Scale:** Horizontal worker scaling based on queue depth.
+*   **Messaging:** Abstracted via `MessagingProvider` interface to decouple from Twilio SDK. `TwilioMessagingService` is the concrete implementation.
 
 ## Implementation Patterns & Consistency Rules
 
@@ -371,6 +375,8 @@ VaultBot/
 │   │   ├── article_worker.py       # Article Worker (entry point)
 │   │   ├── nodes/                  # Processing logic
 │   │   │   └── classifier.py       # Content type classification
+│   │   ├── interfaces/             # Abstract Interfaces (Messaging, etc.)
+│   │   ├── infrastructure/         # Concrete Implementations (TwilioAdapter)
 │   │   ├── tools/                  # Reusable capabilities
 │   │   │   ├── scraper/            # Link scraping (yt-dlp, OpenGraph)
 │   │   │   └── vision/             # Vision API integration

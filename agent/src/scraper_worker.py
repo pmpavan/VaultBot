@@ -10,14 +10,17 @@ import hashlib
 import signal
 from typing import Optional
 from supabase import create_client, Client
-from twilio.rest import Client as TwilioClient
+from supabase import create_client, Client
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from messaging_factory import get_messaging_provider
 
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from tools.scraper.service import ScraperService
 from tools.scraper.types import ScraperRequest
+from agent.src.tools.normalizer.service import NormalizerService
+from agent.src.tools.normalizer.types import NormalizerRequest
 
 # Configure logging
 logging.basicConfig(
@@ -39,14 +42,9 @@ class ScraperWorker:
     
     def __init__(self):
         """Initialize Supabase, Twilio, and Scraper service."""
-        required_env_vars = [
-            'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY',
-            'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_PHONE_NUMBER'
-        ]
-        
-        missing = [var for var in required_env_vars if not os.environ.get(var)]
-        if missing:
-            raise EnvironmentError(f"Missing environment variables: {', '.join(missing)}")
+        if not os.environ.get('SUPABASE_URL') or not os.environ.get('SUPABASE_SERVICE_ROLE_KEY'):
+            logger.error("Missing required environment variables (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)")
+            raise EnvironmentError("Missing required environment variables")
         
         logger.info("Initializing ScraperWorker...")
         
@@ -55,13 +53,10 @@ class ScraperWorker:
             os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
         )
         
-        self.twilio_client = TwilioClient(
-            os.environ.get('TWILIO_ACCOUNT_SID'),
-            os.environ.get('TWILIO_AUTH_TOKEN')
-        )
-        self.twilio_from = os.environ.get('TWILIO_PHONE_NUMBER')
+        self.messaging = get_messaging_provider()
         
         self.scraper_service = ScraperService()
+        self.normalizer_service = NormalizerService()
         
         # Shutdown flag
         self.shutdown_requested = False
@@ -128,6 +123,22 @@ class ScraperWorker:
             # 1. Scrape Metadata
             request = ScraperRequest(url=url)
             metadata = self.scraper_service.scrape(request)
+
+            # 1.5 Normalize Data
+            normalized_data = None
+            try:
+                norm_req = NormalizerRequest(
+                    title=metadata.title or "Untitled",
+                    description=metadata.description,
+                    raw_content=None, # Scraper service doesn't return raw content yet, could add later
+                    source_url=url
+                )
+                normalized_data = self.normalizer_service.normalize(norm_req)
+            except Exception as e:
+                logger.warning(f"Normalization failed for {url}: {e}")
+                print(f"DEBUG: Normalization exception: {e}")
+            
+            print(f"DEBUG: normalized_data is {normalized_data}")
             
             # 2. Deduplication & Persistence
             url_hash = hashlib.sha256(url.encode()).hexdigest()
@@ -139,10 +150,19 @@ class ScraperWorker:
             if existing and existing.data and len(existing.data) > 0:
                 link_id = existing.data[0]['id']
                 # Increment count
-                self.supabase.table('link_metadata').update({
+                update_data = {
                     'scrape_count': (existing.data[0].get('scrape_count') or 1) + 1,
                     'last_updated_at': 'now()'
-                }).eq('id', link_id).execute()
+                }
+                # Update normalized fields if they were missing or we have new extraction
+                if normalized_data:
+                    update_data.update({
+                        'normalized_category': normalized_data.category.value,
+                        'normalized_price_range': normalized_data.price_range.value if normalized_data.price_range else None,
+                        'normalized_tags': normalized_data.tags
+                    })
+
+                self.supabase.table('link_metadata').update(update_data).eq('id', link_id).execute()
                 logger.info(f"Re-used existing metadata {link_id} for {url}")
             else:
                 # Insert new metadata
@@ -156,7 +176,10 @@ class ScraperWorker:
                     'description': metadata.description,
                     'author': metadata.author,
                     'thumbnail_url': metadata.thumbnail_url,
-                    'scrape_status': 'scraped'
+                    'scrape_status': 'scraped',
+                    'normalized_category': normalized_data.category.value if normalized_data else None,
+                    'normalized_price_range': normalized_data.price_range.value if normalized_data and normalized_data.price_range else None,
+                    'normalized_tags': normalized_data.tags if normalized_data else None
                 }).execute()
                 
                 if insert_result.data:
@@ -207,21 +230,7 @@ class ScraperWorker:
                 to = f"whatsapp:{to}"
             
             # Ensure sender is formatted for WhatsApp if recipient is
-            from_number = self.twilio_from
-            if to.startswith('whatsapp:') and not from_number.startswith('whatsapp:'):
-                from_number = f"whatsapp:{from_number}"
-            
-            msg = f"✅ *Saved to Vault!* \n\n"
-            msg += f"📌 *Title:* {title or 'Shared Link'}\n"
-            msg += f"🌐 *Platform:* {platform.title()}\n\n"
-            msg += f"I've cataloged this for you. You can search for it anytime! 🗃️"
-            
-            self.twilio_client.messages.create(
-                from_=from_number,
-                to=to,
-                body=msg
-            )
-            logger.info(f"Success message sent to {to}")
+            self.messaging.send_message(to=to, body=msg)
         except Exception as e:
             logger.error(f"Failed to send success message: {e}")
 
@@ -245,20 +254,7 @@ class ScraperWorker:
         message = self.ERROR_MESSAGES.get(error_category, self.ERROR_MESSAGES['unknown'])
         try:
             # Ensure recipient has whatsapp prefix
-            to_number = user_phone
-            if not to_number.startswith('whatsapp:'):
-                to_number = f"whatsapp:{user_phone}"
-
-            # Ensure sender is formatted for WhatsApp if recipient is
-            from_number = self.twilio_from
-            if to_number.startswith('whatsapp:') and not from_number.startswith('whatsapp:'):
-                from_number = f"whatsapp:{from_number}"
-
-            self.twilio_client.messages.create(
-                from_=from_number,
-                to=to_number,
-                body=f"⚠️ {message}"
-            )
+            self.messaging.send_message(to=user_phone, body=f"⚠️ {message}")
         except Exception as e:
             logger.error(f"Failed to notify user of failure: {e}")
 

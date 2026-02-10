@@ -11,13 +11,16 @@ import json
 import hashlib
 from typing import Optional
 from supabase import create_client, Client
-from twilio.rest import Client as TwilioClient
+from supabase import create_client, Client
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from messaging_factory import get_messaging_provider
 
 # Add src to path for imports
 sys.path.insert(0, os.path.dirname(__file__))
 
 from nodes.article_processor import create_article_processor_graph, ArticleProcessorState
+from agent.src.tools.normalizer.service import NormalizerService
+from agent.src.tools.normalizer.types import NormalizerRequest
 
 # Configure logging
 logging.basicConfig(
@@ -39,8 +42,7 @@ class ArticleWorker:
     def __init__(self):
         """Initialize Supabase and Twilio clients with validation."""
         required_env_vars = [
-            'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY',
-            'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_PHONE_NUMBER'
+            'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'
         ]
         
         missing = [var for var in required_env_vars if not os.environ.get(var)]
@@ -55,14 +57,11 @@ class ArticleWorker:
             os.environ['SUPABASE_SERVICE_ROLE_KEY']
         )
         
-        self.twilio_client = TwilioClient(
-            os.environ['TWILIO_ACCOUNT_SID'],
-            os.environ['TWILIO_AUTH_TOKEN']
-        )
-        self.twilio_from = os.environ['TWILIO_PHONE_NUMBER']
+        self.messaging = get_messaging_provider()
         
         # Initialize Processor Graph
         self.article_processor = create_article_processor_graph()
+        self.normalizer_service = NormalizerService()
         
         # Shutdown flag
         self.shutdown_requested = False
@@ -170,8 +169,25 @@ class ArticleWorker:
                 else:
                     logger.warning(f"Partial error in job {job_id}: {result_state['error']}")
 
+                    logger.warning(f"Partial error in job {job_id}: {result_state['error']}")
+
+            # Normalize Data
+            normalized_data = None
+            try:
+                # Truncate text for normalization to avoid massive tokens
+                content_text = result_state.get('text', '') or ''
+                norm_req = NormalizerRequest(
+                    title=result_state.get('title') or "Untitled",
+                    description=result_state.get('og_tags', {}).get('description'),
+                    raw_content=content_text[:5000], 
+                    source_url=url
+                )
+                normalized_data = self.normalizer_service.normalize(norm_req)
+            except Exception as e:
+                logger.warning(f"Normalization failed for article {url}: {e}")
+
             # Persist Data
-            self._persist_results(job, url, result_state)
+            self._persist_results(job, url, result_state, normalized_data)
             
             # Notify User
             title = result_state.get('title') or "Web Article"
@@ -186,7 +202,7 @@ class ArticleWorker:
             self._mark_job_failed(job, 'extraction_failed') # Categorize better in real app
             return False
 
-    def _persist_results(self, job: dict, url: str, state: ArticleProcessorState):
+    def _persist_results(self, job: dict, url: str, state: ArticleProcessorState, normalized_data: Optional[Any] = None):
         """Save results to database."""
         job_id = job['id']
         url_hash = hashlib.sha256(url.encode()).hexdigest()
@@ -198,10 +214,17 @@ class ArticleWorker:
         if existing.data:
             link_id = existing.data[0]['id']
             # Update existing
-            self.supabase.table('link_metadata').update({
+            update_data = {
                 'scrape_count': (existing.data[0].get('scrape_count') or 1) + 1,
                 'last_updated_at': 'now()'
-            }).eq('id', link_id).execute()
+            }
+            if normalized_data:
+                update_data.update({
+                    'normalized_category': normalized_data.category.value,
+                    'normalized_price_range': normalized_data.price_range.value if normalized_data.price_range else None,
+                    'normalized_tags': normalized_data.tags
+                })
+            self.supabase.table('link_metadata').update(update_data).eq('id', link_id).execute()
         else:
             # Insert new
             # Prepare metadata JSON
@@ -220,7 +243,10 @@ class ArticleWorker:
                 'author': state.get('author'),
                 'summary': state.get('text'), # Storing full text in summary for now (or a real summary if we had one)
                 'metadata_json': metadata_json,
-                'scrape_status': 'scraped' if not state.get('error') else 'partial'
+                'scrape_status': 'scraped' if not state.get('error') else 'partial',
+                'normalized_category': normalized_data.category.value if normalized_data else None,
+                'normalized_price_range': normalized_data.price_range.value if normalized_data and normalized_data.price_range else None,
+                'normalized_tags': normalized_data.tags if normalized_data else None
             }
             
             # Handle image if available
@@ -267,18 +293,7 @@ class ArticleWorker:
             if not to.startswith('whatsapp:'):
                 to = f"whatsapp:{to}"
             
-            from_number = self.twilio_from
-            if to.startswith('whatsapp:') and not from_number.startswith('whatsapp:'):
-                 from_number = f"whatsapp:{from_number}"
-            
-            msg = f"✅ *Article Saved!* \n\n"
-            msg += f"\"{title}\" has been added to your Vault. 📄"
-            
-            self.twilio_client.messages.create(
-                from_=from_number,
-                to=to,
-                body=msg
-            )
+            self.messaging.send_message(to=to, body=msg)
         except Exception as e:
             logger.error(f"Failed to send notification: {e}")
 

@@ -9,13 +9,16 @@ import logging
 import signal
 from typing import Optional, Dict, Any
 from supabase import create_client, Client
-from twilio.rest import Client as TwilioClient
+from supabase import create_client, Client
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from messaging_factory import get_messaging_provider
 
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from nodes.image_processor import ImageProcessorNode, ImageProcessorState
+from agent.src.tools.normalizer.service import NormalizerService
+from agent.src.tools.normalizer.types import NormalizerRequest
 
 # Configure logging
 logging.basicConfig(
@@ -70,21 +73,18 @@ class ImageWorker:
             logger.error(f"Failed to initialize Supabase client: {e}")
             raise
         
-        # Initialize Twilio client
+        # Initialize Messaging Provider
         try:
-            self.twilio_client = TwilioClient(
-                os.environ.get('TWILIO_ACCOUNT_SID'),
-                os.environ.get('TWILIO_AUTH_TOKEN')
-            )
-            self.twilio_from = os.environ.get('TWILIO_PHONE_NUMBER')
-            logger.info("Twilio client initialized successfully")
+            self.messaging = get_messaging_provider()
+            logger.info("Messaging provider initialized successfully")
         except Exception as e:
-            logger.error(f"Failed to initialize Twilio client: {e}")
+            logger.error(f"Failed to initialize messaging provider: {e}")
             raise
         
         # Initialize image processor graph
         from nodes.image_processor import create_image_processor_graph
         self.image_processor = create_image_processor_graph()
+        self.normalizer_service = NormalizerService()
         
         # Shutdown flag
         self.shutdown_requested = False
@@ -210,6 +210,20 @@ class ImageWorker:
                 raise Exception("No image summary generated")
             
             logger.info(f"Image job {job_id} processed successfully")
+
+            # --- Normalize Data ---
+            normalized_data = None
+            try:
+                metadata_caption = result_state.get('metadata', {}).get('caption') if result_state.get('metadata') else None
+                norm_req = NormalizerRequest(
+                    title=metadata_caption or "Image Analysis",
+                    description=image_summary,
+                    raw_content=None,
+                    source_url=url
+                )
+                normalized_data = self.normalizer_service.normalize(norm_req)
+            except Exception as e:
+                logger.warning(f"Normalization failed for image {url}: {e}")
             
             # --- Data Persistence Start ---
             import hashlib
@@ -224,10 +238,20 @@ class ImageWorker:
             if existing and existing.data and len(existing.data) > 0:
                 link_id = existing.data[0]['id']
                 # Increment count
-                self.supabase.table('link_metadata').update({
+                # Prepare update data
+                update_data = {
                     'scrape_count': (existing.data[0].get('scrape_count') or 1) + 1,
                     'last_updated_at': 'now()'
-                }).eq('id', link_id).execute()
+                }
+
+                if normalized_data:
+                    update_data.update({
+                        'normalized_category': normalized_data.category.value,
+                        'normalized_price_range': normalized_data.price_range.value if normalized_data.price_range else None,
+                        'normalized_tags': normalized_data.tags
+                    })
+
+                self.supabase.table('link_metadata').update(update_data).eq('id', link_id).execute()
                 logger.info(f"Re-used existing image metadata {link_id}")
             else:
                 # Insert new metadata
@@ -243,7 +267,11 @@ class ImageWorker:
                     'description': image_summary, 
                     'author': metadata.get('author'),
                     'thumbnail_url': metadata.get('image_urls', [None])[0] if metadata.get('image_urls') else None,
-                    'scrape_status': 'scraped'
+                    'thumbnail_url': metadata.get('image_urls', [None])[0] if metadata.get('image_urls') else None,
+                    'scrape_status': 'scraped',
+                    'normalized_category': normalized_data.category.value if normalized_data else None,
+                    'normalized_price_range': normalized_data.price_range.value if normalized_data and normalized_data.price_range else None,
+                    'normalized_tags': normalized_data.tags if normalized_data else None
                 }).execute()
                 
                 if insert_result.data:
@@ -315,18 +343,7 @@ class ImageWorker:
                 to = f"whatsapp:{to}"
             
             # Ensure sender is formatted for WhatsApp if recipient is
-            from_number = self.twilio_from
-            if to.startswith('whatsapp:') and not from_number.startswith('whatsapp:'):
-                from_number = f"whatsapp:{from_number}"
-            
-            msg = f"✅ *Image Processed!* \n\n"
-            msg += f"Your image has been analyzed and the summary is ready in your Vault. 📸"
-            
-            self.twilio_client.messages.create(
-                from_=from_number,
-                to=to,
-                body=msg
-            )
+            self.messaging.send_message(to=to, body=msg)
             logger.info(f"Success message sent to {to}")
         except Exception as e:
             logger.error(f"Failed to send success message: {e}")
@@ -363,22 +380,7 @@ class ImageWorker:
                 return
             
             # Ensure recipient has whatsapp prefix if needed (though payload usually has it)
-            if not user_phone.startswith('whatsapp:') and len(user_phone) > 10:
-                 # heuristic: if it looks like a phone number but missing prefix
-                 user_phone = f"whatsapp:{user_phone}"
-
-            # Ensure sender is formatted for WhatsApp if recipient is
-            from_number = self.twilio_from
-            if user_phone.startswith('whatsapp:') and not from_number.startswith('whatsapp:'):
-                from_number = f"whatsapp:{from_number}"
-            
-            message = self.ERROR_MESSAGES.get(error_category, self.ERROR_MESSAGES['unknown'])
-            
-            self.twilio_client.messages.create(
-                from_=from_number,
-                to=user_phone,
-                body=f"⚠️ {message}"
-            )
+            self.messaging.send_message(to=user_phone, body=f"⚠️ {message}")
             
             logger.info(f"Sent failure notification to {user_phone} for job {job['id']}")
             
