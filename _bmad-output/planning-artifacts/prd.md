@@ -71,6 +71,68 @@ Phase 1 focuses on proving value in both **Personal (DM)** and **Shared (Group)*
 *   Collaborative/Shared Lists (Phase 2)
 *   Export to Notion (Phase 3)
 
+## Implementation Status
+
+> [!NOTE]
+> **Last Updated:** 2026-02-10
+
+### Epic 1: The "Digital Vault" (Core Ingestion & Privacy) ✅ COMPLETE
+
+**Completed Stories:**
+- ✅ **Story 1.1:** Webhook Ingestion & Privacy Gate
+- ✅ **Story 1.2:** Job Queue Schema  
+- ✅ **Story 1.3:** Payload Parser & Classification
+- ✅ **Story 1.4:** Automatic User Profile Creation
+- ✅ **Story 1.5:** Dead Letter Queue (DLQ)
+
+**Key Achievements:**
+- WhatsApp bot successfully processes DM (passive) and Group (tagged-only) messages
+- Database schema supports users, jobs, and dead letter queue
+- Classifier worker automatically detects content type (link, video, image, text)
+- User profiles auto-created on first interaction using phone number
+- Failed jobs routed to DLQ for debugging
+
+### Epic 2: "The Analyst" (Intelligence Engine) 🚧 IN PROGRESS
+
+**Completed Stories (5/9):**
+- ✅ **Story 2.1:** Vision API Integration (OpenRouter with GPT-4o/Claude)
+- ✅ **Story 2.2:** YouTube & Social Link Scraper (yt-dlp + proxy rotation)
+- ✅ **Story 2.3:** Video Frame Extraction (keyframe analysis)
+- ✅ **Story 2.4:** Image Post Extraction (Social Media)
+- ✅ **Story 2.5:** Text & Article Parser
+
+**In Development:**
+- 🚧 **Story 2.8:** Raw Image Processing (ready-for-dev)
+- 🚧 **Story 2.9:** Video Post Extraction (ready-for-dev)
+
+**Not Started:**
+- ⬜ **Story 2.6:** Data Normalizer Agent
+- ⬜ **Story 2.7:** Natural Language Summary Generator
+
+**Key Achievements:**
+- Universal link scraper supports Instagram, TikTok, YouTube, blogs, articles
+- YouTube dual-strategy: YouTube Data API (fast) + yt-dlp fallback (cookie-based)
+- Video/image analysis via Vision API with structured metadata extraction
+- Deduplication system via `link_metadata` table (url_hash)
+- 5 specialized workers deployed on Cloud Run: classifier, scraper, video, image, article
+
+### Epic 3: "Ask The Vault" (Search & Recall) ⬜ NOT STARTED
+
+**Pending Stories:**
+- ⬜ Vector Extension & Indexing
+- ⬜ Search Command Parser
+- ⬜ Semantic Search Implementation
+- ⬜ Dynamic Card Generator
+- ⬜ WhatsApp Visual Response
+
+### Epic 4: "Shared Memories" (Group Context) ⬜ NOT STARTED
+
+**Pending Stories:**
+- ⬜ Source Attribution Logic
+- ⬜ Hybrid Search Scope (RLS Policy) 
+- ⬜ Group Member Sync
+- ⬜ Privacy Control (/pause)
+
 ## User Journeys
 
 ### 1. Explicit Group Capture (Shared Memory)
@@ -144,10 +206,11 @@ Phase 1 focuses on proving value in both **Personal (DM)** and **Shared (Group)*
 *   **FR-14 (Attribution):** Saved items in groups MUST store the `user_id` of the sharer to display "Saved by [Name]" in search results.
 
 ### 2. Metadata Extraction (The Brain)
-*   **FR-04:** System extracts **Visual Metadata** (keyframes/OCR) from both **Video and Image** files.
-*   **FR-05:** System extracts **Platform Metadata** (Caption, Hashtags, Author) from valid links.
-*   **FR-06:** System generates and stores a **Natural Language Summary** for ALL content types (Video, Image, Text) to support downstream RAG retrieval.
-*   **FR-07:** System normalizes data into standard fields (`Location`, `Price`, `Category`, `Vibe`).
+*   **FR-04:** System extracts **Visual Metadata** (keyframes/OCR) from both **Video and Image** files. ✅ **IMPLEMENTED** via Vision API integration (Story 2.1) and frame extraction (Story 2.3).
+*   **FR-05:** System extracts **Platform Metadata** (Caption, Hashtags, Author) from valid links. ✅ **IMPLEMENTED** via dual-strategy scraper: YouTube Data API for fast metadata + yt-dlp with cookie authentication for comprehensive extraction (Story 2.2).
+*   **FR-05a (NEW):** System implements **YouTube Dual Extraction Strategy**: Primary extraction via YouTube Data API (fast, quota-based), automatic fallback to yt-dlp with cookie authentication for API failures or quota exhaustion. ✅ **IMPLEMENTED**
+*   **FR-06:** System generates and stores a **Natural Language Summary** for ALL content types (Video, Image, Text) to support downstream RAG retrieval. ⬜ **PLANNED** (Story 2.7)
+*   **FR-07:** System normalizes data into standard fields (`Location`, `Price`, `Category`, `Vibe`). ⬜ **PLANNED** (Story 2.6)
 
 ### 3. Search & Retrieval (The Value)
 *   **FR-08:** Users can query their history via natural language commands (e.g., `/search cozy cafe`).
@@ -178,8 +241,13 @@ Phase 1 focuses on proving value in both **Personal (DM)** and **Shared (Group)*
 ## Non-Functional Requirements
 
 ### Performance
-*   **NFR-01 (Latency):** Webhook Endpoint must return `200 OK` within **2,000ms** (95th percentile) to prevent Twilio timeouts.
+*   **NFR-01 (Latency):** Webhook Endpoint must return `200 OK` within **2,000ms** (95th percentile) to prevent Twilio timeouts. ✅ **ACHIEVED**: Edge function averages <500ms
 *   **NFR-02 (Throughput):** System supports **100 concurrent requests** during peak viral bursts.
+*   **NFR-09 (NEW - Worker Performance):** Extraction latency targets:
+    *   Link scraping: <5 seconds (yt-dlp) or <2 seconds (YouTube API)
+    *   Video frame extraction: ~30-45 seconds
+    *   Image analysis: ~10-15 seconds
+*   **NFR-10 (NEW - Worker Uptime):** Cloud Run workers maintain >95% uptime with automatic restarts on failure.
 
 ### Security
 *   **NFR-03 (Authentication):** All inbound webhooks must validate `X-Twilio-Signature`.

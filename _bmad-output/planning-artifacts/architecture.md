@@ -50,79 +50,223 @@ date: '2026-01-30'
 ## Starter Template Evaluation
 
 ### Primary Technology Domain
-**Event-Driven Agentic System** (Hybrid: Serverless + Durable Agent).
+**Event-Driven Worker System** (Hybrid: Serverless Ingestion + Polling Workers).
 
 ### Selected Architecture: The "Async Brain" Pattern
 
 **Structure:**
-1.  **The Body (Ingestion):** Supabase Edge Functions (Deno).
-2.  **The Brain (Processing):** LangGraph Cloud (Python/JS).
+1.  **The Body (Ingestion):** Supabase Edge Functions (Deno/TypeScript).
+2.  **The Brain (Processing)::** Cloud Run Jobs (Python Polling Workers).
 
 **Rationale for Selection:**
-*   **Best of Both Worlds:** We get the "Zero Ops" simplicity of Supabase for the high-volume webhook intake, and the "Durable State" of LangGraph for the long-running video extraction agents.
-*   **Timeout Avoidance:** Video processing takes >60s. Edge Functions would time out. LangGraph Cloud supports long-running jobs natively.
-*   **Agentic Future-Proofing:** We start with extraction, but LangGraph allows us to add "Clarification Loops" (e.g., asking the user "Did you mean this place?") without rewriting the entire stack.
+*   **Simplicity Over Complexity:** Polling-based workers provide straightforward, debuggable processing vs stateful agent frameworks
+*   **Timeout Avoidance:** Video processing takes >60s. Edge Functions would time out. Cloud Run Jobs support long-running processes.
+*   **Independent Scaling:** Each worker type (classifier, scraper, video, image, article) scales independently based on workload
+*   **Database as Queue:** Leverages Postgres as both data store and job queue, eliminating need for separate message broker
 
-**Initialization Strategy:**
+**Actual Implementation:**
 
 **1. The Ingestion Layer (Supabase):**
 ```bash
 supabase functions new webhook-handler
 ```
-*   **Role:** Receive Webhook -> Validate Signature -> **(New) Privacy Check** -> Push Job to Queue.
+*   **Role:** Receive Webhook → Validate Signature → **(New) Privacy Check** → Push Job to Queue.
 *   **Privacy Gate:** If `is_group` AND `!is_tagged`, return `200 OK` (Ignore). Do not queue.
+*   **Deployment:** `supabase functions deploy webhook-handler`
 
-**2. The Processing Layer (LangGraph):**
+**2. The Processing Layer (Cloud Run Workers):**
 ```bash
-pip install langgraph langsmith
-langgraph new vaultbot-agent
+# Deploy 5 specialized workers
+gcloud run jobs create vaultbot-classifier-worker --source=agent/ --region=us-central1
+gcloud run jobs create vaultbot-scraper-worker --source=agent/ --region=us-central1
+gcloud run jobs create vaultbot-video-worker --source=agent/ --region=us-central1
+gcloud run jobs create vaultbot-image-worker --source=agent/ --region=us-central1
+gcloud run jobs create vaultbot-article-worker --source=agent/ --region=us-central1
 ```
-*   **Role:** Pull Job -> Extract Metadata -> Vectorize -> Save to DB -> Send Final WhatsApp Reply.
 
-**Architectural Decisions Provided by Hybrid Stack:**
+**Worker Responsibilities:**
+*   **Classifier Worker (`worker.py`):** Polls for `status='pending' AND content_type IS NULL` → Classifies as link/video/image/text → Updates content_type
+*   **Scraper Worker (`scraper_worker.py`):** Polls for `content_type='link'` → Scrapes metadata → Saves to link_metadata + user_saved_links
+*   **Video Worker (`video_worker.py`):** Polls for `content_type='video'` → Extracts frames → Analyzes via Vision API
+*   **Image Worker (`image_worker.py`):** Polls for `content_type='image'` → Analyzes via Vision API
+*   **Article Worker (`article_worker.py`):** Polls for `content_type='article'` → Extracts text → Parses metadata
+
+**Polling Pattern:**
+```python
+while not shutdown_requested:
+    job = fetch_and_lock_job()  # SELECT ... WHERE status='pending' AND content_type='X' LIMIT 1
+    if job:
+        process_job(job)  # UPDATE status='processing', do work, UPDATE status='complete'
+    else:
+        time.sleep(5)  # No jobs available
+```
+
+**Architectural Decisions:**
 
 **Language & Runtime:**
-*   **Ingestion:** TypeScript (Deno).
-*   **Agent:** Python (Recommended for best AI library support).
+*   **Ingestion:** TypeScript (Deno) - Runs on Supabase Edge
+*   **Workers:** Python 3.9+ - Deployed as Cloud Run Jobs
 
 **State Management:**
-*   **Hot State:** LangGraph Checkpointer (Postgres) tracks the "Conversation" state.
-*   **Cold State:** Supabase Database (Items, Users).
+*   **Job Queue:** Postgres `jobs` table with atomic status updates
+*   **Metadata Store:** Postgres `link_metadata`, `user_saved_links` tables
+*   **User State:** Postgres `users` table
 
 **Deployment:**
-*   **Ingestion:** `supabase functions deploy` (Global Edge).
-*   **Agent:** `langgraph deploy` (LangGraph Cloud) or Dockerized Cloud Run.
+*   **Ingestion:** `supabase functions deploy` (Global Edge via Deno Deploy)
+*   **Workers:** Cloud Run Jobs with Dockerfiles per worker type
+*   **Database:** Supabase Postgres with pgvector extension
 
 ## Core Architectural Decisions
 
 ### Decision Priority Analysis
 
 **Critical Decisions (Block Implementation):**
-*   **Hybrid Runtime:** Supabase Edge (Ingestion) + LangGraph (Processing).
-*   **Vector Database:** Supabase `pgvector` (Unified capability).
-*   **Queue System:** Postgres-based Queue (Simple handoff).
-*   **Authentication:** Twilio Signature Validation (Mandatory security).
+*   **Polling Workers:** Cloud Run Jobs polling Postgres queue (Deployed & Running)
+*   **Vector Database:** Supabase `pgvector` enabled (Ready for Epic 3)
+*   **Queue System:** Postgres `jobs` table with atomic claiming via RPC
+*   **Authentication:** Twilio Signature Validation (Implemented in Edge Function)
 
 **Important Decisions (Shape Architecture):**
-*   **Embeddings Model:** `text-embedding-3-small` (Cost/Perf balance).
-*   **Agent framework:** LangGraph (Python) for durable execution.
+*   **Extraction Strategy:** Dual-mode YouTube extraction (API primary, yt-dlp fallback)
+*   **Deduplication:** `url_hash` based deduplication in `link_metadata` table
+*   **Embeddings Model:** `text-embedding-3-small` (Planned for Epic 3)
 
 **Deferred Decisions (Post-MVP):**
-*   **Web Dashboard UI:** No React frontend initially.
-*   **User Login System:** Phone-number based identity only for MVP.
-*   **Privacy Control Store:** `fastKV` (Redis) for `/pause` state (Implemented if scale > 100 users).
+*   **Web Dashboard UI:** No React frontend initially
+*   **User Login System:** Phone-number based identity only for MVP
+*   **Group Membership Tracking:** Deferred to Epic 4
 
 ### Data Architecture
 
 **Database Choice:** Supabase (PostgreSQL 16+)
-*   **Rationale:** Unified Relational + Vector store. Simplifies "Hybrid Search" (e.g., "Find jazz bars [vector] that are cheap [SQL]").
-*   **Vector Extension:** `pgvector` with HNSW indexing for performance.
-*   **State Store:** `langgraph-checkpoint-postgres` (Persists agent state in same DB).
+*   **Rationale:** Unified Relational + Vector store. Simplifies future "Hybrid Search"
+*   **Vector Extension:** `pgvector` enabled, HNSW indexing planned for Epic 3
+*   **Connection Pooling:** Supabase default pooler (pgBouncer)
 
-**Schema Extensions (Privacy & Groups):**
-*   **Jobs/Items:** Added `source_channel_id` (Group ID) and `source_type` ('dm' | 'group').
-*   **Attribution:** Added `attributed_user_id` to Items (Who saved it?).
-*   **Isolation Policy:** RLS must enforce `user_id = me OR source_channel_id IN my_groups`.
+**Database Schema (Implemented):**
+
+#### Core Tables
+
+**1. `users` Table**
+```sql
+CREATE TABLE users (
+  phone_number TEXT PRIMARY KEY,        -- WhatsApp phone number (e.g., '+15551234567')
+  first_name TEXT,                      -- From ProfileName in webhook
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+*Purpose:* Auto-created user profiles (Story 1.4)
+
+**2. `jobs` Table** (Job Queue)
+```sql
+CREATE TABLE jobs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id TEXT REFERENCES users(phone_number),
+  user_phone TEXT NOT NULL,             -- Denormalized for quick access
+  source_channel_id TEXT,               -- Group ID or user phone (for DMs)
+  source_type TEXT CHECK(source_type IN ('dm', 'group')),
+  content_type TEXT CHECK(content_type IN ('link', 'video', 'image', 'article', 'text')),
+  platform TEXT,                        -- 'youtube', 'instagram', 'tiktok', 'generic'
+  status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'complete', 'failed')),
+  payload JSONB NOT NULL,               -- Original webhook payload
+  result JSONB,                         -- Processing results
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX jobs_status_content_type_idx ON jobs(status, content_type);
+CREATE INDEX jobs_user_phone_idx ON jobs(user_phone);
+```
+*Purpose:* Job queue with atomic claiming (Story 1.2)
+
+**3. `link_metadata` Table** (Deduplication Layer)
+```sql
+CREATE TABLE link_metadata (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  url TEXT NOT NULL,
+  url_hash TEXT UNIQUE NOT NULL,        -- SHA-256 hash for deduplication
+  platform TEXT NOT NULL,                -- 'youtube', 'instagram', 'tiktok'
+  content_type TEXT NOT NULL,            -- 'link', 'image', 'video'
+  extraction_strategy TEXT NOT NULL CHECK(extraction_strategy IN ('ytdlp', 'opengraph', 'api', 'vision')),
+  title TEXT,
+  description TEXT,
+  author TEXT,
+  thumbnail_url TEXT,
+  duration INTEGER,                      -- Video duration in seconds
+  scrape_status TEXT DEFAULT 'scraped',
+  scrape_count INTEGER DEFAULT 1,        -- How many users saved this URL
+  ai_summary TEXT,                       -- Epic 2 Story 2.7 (planned)
+  normalized_category TEXT,              -- Epic 2 Story 2.6 (planned)
+  normalized_tags TEXT[],                -- Epic 2 Story 2.6 (planned)
+  embedding VECTOR(1536),                -- Epic 3 Story 3.1 (planned)
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  last_updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX link_metadata_url_hash_idx ON link_metadata(url_hash);
+CREATE INDEX link_metadata_platform_idx ON link_metadata(platform);
+```
+*Purpose:* Shared metadata store with deduplication (Story 2.2)
+
+**4. `user_saved_links` Table** (User Attribution Layer)
+```sql
+CREATE TABLE user_saved_links (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  link_id UUID REFERENCES link_metadata(id),
+  user_id TEXT REFERENCES users(phone_number),
+  source_channel_id TEXT NOT NULL,      -- Group ID or user phone
+  source_type TEXT NOT NULL CHECK(source_type IN ('dm', 'group')),
+  attributed_user_id TEXT REFERENCES users(phone_number), -- Who shared it
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(link_id, user_id, source_channel_id)  -- Prevent duplicate saves
+);
+
+-- RLS Policy (Epic 4)
+-- users can see their own saves OR group saves they're a member of
+CREATE INDEX user_saved_links_user_idx ON user_saved_links(user_id);
+CREATE INDEX user_saved_links_channel_idx ON user_saved_links(source_channel_id);
+```
+*Purpose:* Privacy-aware user tracking with attribution (Epic 4)
+
+**5. `dlq_jobs` Table** (Dead Letter Queue)
+```sql
+CREATE TABLE dlq_jobs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  original_job_id UUID,
+  payload JSONB NOT NULL,
+  error_message TEXT,
+  error_details JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+*Purpose:* Failed job debugging (Story 1.5)
+
+#### Database Functions
+
+**`claim_pending_job()` RPC Function:**
+```sql
+CREATE OR REPLACE FUNCTION claim_pending_job()
+RETURNS SETOF jobs AS $$
+  UPDATE jobs
+  SET status = 'processing', updated_at = NOW()
+  WHERE id = (
+    SELECT id FROM jobs
+    WHERE status = 'pending'
+    ORDER BY created_at ASC
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED
+  )
+  RETURNING *;
+$$ LANGUAGE SQL;
+```
+*Purpose:* Atomic job claiming prevents race conditions
+
+**Schema Extensions (Privacy & Groups - Epic 4):**
+*   **Jobs/Items:** `source_channel_id` and `source_type` support group vs DM context
+*   **Attribution:** `attributed_user_id` tracks who shared content in groups
+*   **RLS Policy (Planned):** `user_id = me OR source_channel_id IN my_groups`
+
 
 ### Authentication & Security
 
@@ -170,60 +314,92 @@ langgraph new vaultbot-agent
 
 ### Structure Patterns
 
-**Proposed Monorepo Structure:**
-*   `/supabase`: All Supabase config (Migrations, Edge Functions).
-*   `/agent`: The Python LangGraph Application (Graph, Nodes, Tools).
-*   `/docs`: Documentation.
-*   `bmad-config.yaml`: Agent definitions.
+**Actual Monorepo Structure:**
+*   `/supabase`: All Supabase config (Migrations, Edge Functions)
+*   `/agent`: Python Worker Applications (5 specialized workers)
+*   `/docs`: Project documentation
+*   `/scripts`: Testing and utility scripts
+*   `/_bmad-output`: BMAD planning and implementation artifacts
 
 ### Communication Patterns
 
-**Event System (The Queue):**
+**Polling-Based Job Queue:**
 *   **Table:** `jobs`
-*   **Column:** `payload` (JSONB)
-*   **Schema Standard:**
-    ```json
-    {
-      "type": "video_processing",
-      "user_phone": "+1555...",
-      "source_channel": "group-123",
-      "source_type": "group",
-      "media_url": "https://..."
-    }
-    ```
-*   **Rule:** Always include `user_phone` as the persistent identifier.
+*   **Key Columns:** 
+    - `id` (UUID, PK)
+    - `status` (ENUM: 'pending', 'processing', 'complete', 'failed')
+    - `content_type` (ENUM: 'link', 'video', 'image', 'article', 'text')
+    - `platform` (VARCHAR: 'youtube', 'instagram', 'tiktok', 'generic', etc.)
+    - `payload` (JSONB: original webhook data)
+    - `result` (JSONB: processing results)
+*   **Atomic Claiming:** Workers use `claim_pending_job()` RPC function for race-condition-free job claiming
+*   **Status Flow:** `pending` → `processing` → `complete` or `failed`
+
+**Example Payload:**
+```json
+{
+  "From": "whatsapp:+15551234567",
+  "Body": "https://youtube.com/watch?v=...",
+  "MessageSid": "SM...",
+  "ProfileName": "John Doe"
+}
+```
 
 ## Project Structure & Boundaries
 
 ### Complete Project Directory Structure
 
 ```text
-vaultbot/
-├── supabase/                  # [The Body] - TypeScript (Ingestion)
+VaultBot/
+├── supabase/                       # [The Body] - TypeScript (Ingestion)
 │   ├── functions/
-│   │   ├── webhook-handler/   # FR: Handle Twilio Webhook -> Validate -> Queue
-│   │   └── _shared/           # Shared Types (Queue Payloads)
-│   ├── migrations/            # DB Schema (jobs, vectors, users)
-│   └── config.toml            # Project Config
-├── agent/                     # [The Brain] - Python (Processing)
+│   │   ├── webhook-handler/        # Twilio webhook → Privacy gate → Job queue
+│   │   └── _shared/                # Shared types
+│   ├── migrations/                 # Database schema evolution
+│   │   ├── 20260129000000_create_users_table.sql
+│   │   ├── 20260129000001_create_jobs_table.sql
+│   │   ├── 20260206000002_enable_pgvector.sql
+│   │   ├── 20260207000000_create_link_metadata_table.sql
+│   │   └── 20260207000001_create_user_saved_links_table.sql
+│   └── config.toml
+├── agent/                          # [The Brain] - Python (Workers)
 │   ├── src/
-│   │   ├── graph/             # LangGraph State Machine Definition
-│   │   ├── nodes/             # Logic: Extract, Vectorize, Generate Card
-│   │   └── tools/             # Capabilities: Database, Vision API
-│   ├── tests/                 # Agent Logic Tests
-│   ├── pyproject.toml         # Python Dependencies
-│   └── Dockerfile             # Container Definition for Cloud Run
-├── docs/                      # [The Memory] - Project Documentation
-│   ├── architecture.md
-│   ├── prd.md
-│   └── ux-design-specification.md
-└── bmad-config.yaml           # Agent Configuration
+│   │   ├── worker.py               # Classifier Worker (entry point)
+│   │   ├── scraper_worker.py       # Scraper Worker (entry point)
+│   │   ├── video_worker.py         # Video Worker (entry point)
+│   │   ├── image_worker.py         # Image Worker (entry point)
+│   │   ├── article_worker.py       # Article Worker (entry point)
+│   │   ├── nodes/                  # Processing logic
+│   │   │   └── classifier.py       # Content type classification
+│   │   ├── tools/                  # Reusable capabilities
+│   │   │   ├── scraper/            # Link scraping (yt-dlp, OpenGraph)
+│   │   │   └── vision/             # Vision API integration
+│   │   └── prompts/                # LLM prompt templates
+│   ├── tests/                      # Unit & integration tests
+│   ├── requirements.txt            # Python dependencies
+│   ├── Dockerfile.classifier       # Classifier worker container
+│   ├── Dockerfile.scraper          # Scraper worker container
+│   ├── Dockerfile.video            # Video worker container
+│   ├── Dockerfile.image            # Image worker container
+│   ├── Dockerfile.article          # Article worker container
+│   ├── deploy-gcp.sh               # Main deployment script
+│   └── DEPLOYMENT.md               # Deployment guide
+├── scripts/                        # Testing & utilities
+│   └── test_scraper_live.py
+├── docs/                           # Project documentation
+└── _bmad-output/                   # Planning artifacts
+    ├── planning-artifacts/
+    │   ├── prd.md
+    │   ├── architecture.md
+    │   └── epics.md
+    └── implementation-artifacts/
+        └── sprint-status.yaml
 ```
 
 ### Architectural Boundaries
 
 **API Boundaries:**
-*   **External (Ingestion):** `POST /functions/v1/webhook-handler` (Public, Twilio-Secured).
+*   **External (Ingestion):** `POST /functions/v1/webhook-handler` (Public, Twilio-Secured)
 *   **Internal (Agent):** `SELECT * FROM jobs` (Polled by Agent via DB Connection).
 
 **Component Boundaries:**

@@ -165,13 +165,21 @@ class ScraperWorker:
 
             # 3. Create User Saved Link entry
             if link_id:
-                self.supabase.table('user_saved_links').insert({
-                    'link_id': link_id,
-                    'user_id': user_phone,
-                    'source_channel_id': job.get('source_channel_id', user_phone),
-                    'source_type': job.get('source_type', 'dm'),
-                    'attributed_user_id': user_phone
-                }).execute()
+                try:
+                    self.supabase.table('user_saved_links').insert({
+                        'link_id': link_id,
+                        'user_id': user_phone,
+                        'source_channel_id': job.get('source_channel_id', user_phone),
+                        'source_type': job.get('source_type', 'dm'),
+                        'attributed_user_id': user_phone
+                    }).execute()
+                except Exception as e:
+                    # Handle duplicate - user already saved this link
+                    if '23505' in str(e) or 'duplicate key' in str(e).lower():
+                        logger.info(f"User {user_phone} already saved link {link_id}, treating as success")
+                    else:
+                        raise  # Re-raise if it's not a duplicate error
+
 
             # 4. Finalize Job
             self.supabase.table('jobs').update({
@@ -189,7 +197,7 @@ class ScraperWorker:
 
         except Exception as e:
             logger.error(f"Detailed error in scraper worker for {job_id}: {e}", exc_info=True)
-            self._mark_failed(job, 'scraping_failed')
+            self._mark_failed(job, 'scraping_failed', error_details=str(e))
             return False
 
     def notify_user_success(self, to: str, title: str, platform: str):
@@ -217,11 +225,22 @@ class ScraperWorker:
         except Exception as e:
             logger.error(f"Failed to send success message: {e}")
 
-    def _mark_failed(self, job: dict, error_category: str):
+    def _mark_failed(self, job: dict, error_category: str, error_details: str = None):
         job_id = job['id']
         user_phone = job.get('user_phone') or job['payload'].get('From', '').replace('whatsapp:', '')
         
-        self.supabase.table('jobs').update({'status': 'failed'}).eq('id', job_id).execute()
+        # Include error details in result for debugging
+        result_data = {
+            'error_category': error_category,
+            'error_message': self.ERROR_MESSAGES.get(error_category, self.ERROR_MESSAGES['unknown'])
+        }
+        if error_details:
+            result_data['error_details'] = str(error_details)
+            
+        self.supabase.table('jobs').update({
+            'status': 'failed',
+            'result': result_data
+        }).eq('id', job_id).execute()
         
         message = self.ERROR_MESSAGES.get(error_category, self.ERROR_MESSAGES['unknown'])
         try:
