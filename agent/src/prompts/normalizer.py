@@ -1,6 +1,6 @@
 from typing import Dict, Any, List
 from pydantic import Field
-from agent.src.tools.normalizer.types import NormalizerResponse
+from tools.normalizer.types import NormalizerResponse
 from .core import VaultBotJsonSystemPrompt
 
 class NormalizerSystemPrompt(VaultBotJsonSystemPrompt):
