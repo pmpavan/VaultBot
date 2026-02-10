@@ -1,4 +1,4 @@
-from agent.src.infrastructure.twilio_adapter import TwilioMessagingService
+from infrastructure.twilio_adapter import TwilioMessagingService
 from agent.src.interfaces.messaging import MessagingProvider
 
 def get_messaging_provider() -> MessagingProvider:

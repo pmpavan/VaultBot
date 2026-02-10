@@ -5,7 +5,7 @@ from typing import Optional
 from openai import OpenAI
 
 from .types import NormalizerRequest, NormalizerResponse
-from agent.src.prompts.normalizer import NormalizerSystemPrompt
+from prompts.normalizer import NormalizerSystemPrompt
 
 logger = logging.getLogger(__name__)
 

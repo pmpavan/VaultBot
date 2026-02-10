@@ -19,8 +19,8 @@ from messaging_factory import get_messaging_provider
 sys.path.insert(0, os.path.dirname(__file__))
 
 from nodes.article_processor import create_article_processor_graph, ArticleProcessorState
-from agent.src.tools.normalizer.service import NormalizerService
-from agent.src.tools.normalizer.types import NormalizerRequest
+from tools.normalizer.service import NormalizerService
+from tools.normalizer.types import NormalizerRequest
 
 # Configure logging
 logging.basicConfig(

@@ -17,8 +17,8 @@ from messaging_factory import get_messaging_provider
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from nodes.video_processor import create_video_processor_graph, VideoProcessorState
-from agent.src.tools.normalizer.service import NormalizerService
-from agent.src.tools.normalizer.types import NormalizerRequest
+from tools.normalizer.service import NormalizerService
+from tools.normalizer.types import NormalizerRequest
 
 # Configure logging
 logging.basicConfig(
