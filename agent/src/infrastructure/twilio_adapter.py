@@ -1,7 +1,7 @@
 import os
 import logging
 from twilio.rest import Client
-from ..interfaces.messaging import MessagingProvider
+from interfaces.messaging import MessagingProvider
 from typing import Optional
 
 logger = logging.getLogger(__name__)
