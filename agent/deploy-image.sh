@@ -4,14 +4,14 @@ set -e
 # Configuration
 PROJECT_ID="vaultbot-486713"
 REGION="us-central1"
-SERVICE_NAME_ARTICLE="vaultbot-article-worker"
+SERVICE_NAME_IMAGE="vaultbot-image-worker"
 
 # Colors for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${YELLOW}🚀 VaultBot Article Worker - Google Cloud Run Deployment${NC}"
+echo -e "${YELLOW}🚀 VaultBot Image Worker - Google Cloud Run Deployment${NC}"
 echo ""
 
 # Check if gcloud is installed
@@ -38,10 +38,8 @@ fi
 # Check for required proxy variables
 if [ -z "$PROXY_HOST" ] || [ -z "$PROXY_PORT" ]; then
     echo -e "${YELLOW}⚠️  WARNING: Proxy configuration incomplete or missing in environment!${NC}"
-    echo "   The Article Worker will run without a proxy, which may lead to blocking."
+    echo "   The Image Worker uses proxies for scraping."
     echo "   Ensure PROXY_HOST, PROXY_PORT, PROXY_USERNAME, PROXY_PASSWORD are set in ../.env"
-    # We do not exit 1 here to allow deployment if user intends no proxy, 
-    # but the log warning confirms why it's missing.
     echo "   Continuing in 5 seconds..."
     sleep 5
 else
@@ -57,31 +55,31 @@ gcloud services enable cloudbuild.googleapis.com
 gcloud services enable run.googleapis.com
 gcloud services enable artifactregistry.googleapis.com
 
-# Build and deploy Article Worker
+# Build and deploy Image Worker
 echo ""
-echo -e "${GREEN}🏗️  Building and pushing Article Worker to GCR...${NC}"
-cat > cloudbuild-article.yaml <<EOF
+echo -e "${GREEN}🏗️  Building and pushing Image Worker to GCR...${NC}"
+cat > cloudbuild-image.yaml <<EOF
 steps:
 - name: 'gcr.io/cloud-builders/docker'
-  args: ['build', '-f', 'Dockerfile.article', '-t', 'gcr.io/$PROJECT_ID/$SERVICE_NAME_ARTICLE', '.']
+  args: ['build', '-f', 'Dockerfile.image', '-t', 'gcr.io/$PROJECT_ID/$SERVICE_NAME_IMAGE', '.']
 images:
-- 'gcr.io/$PROJECT_ID/$SERVICE_NAME_ARTICLE'
+- 'gcr.io/$PROJECT_ID/$SERVICE_NAME_IMAGE'
 timeout: 1200s
 EOF
 
-gcloud builds submit --config=cloudbuild-article.yaml --timeout=20m .
+gcloud builds submit --config=cloudbuild-image.yaml --timeout=20m .
 
-echo -e "${GREEN}🚀 Deploying Article Worker as Cloud Run Job...${NC}"
-gcloud run jobs create $SERVICE_NAME_ARTICLE \
-    --image gcr.io/$PROJECT_ID/$SERVICE_NAME_ARTICLE \
+echo -e "${GREEN}🚀 Deploying Image Worker as Cloud Run Job...${NC}"
+gcloud run jobs create $SERVICE_NAME_IMAGE \
+    --image gcr.io/$PROJECT_ID/$SERVICE_NAME_IMAGE \
     --region $REGION \
     --memory 512Mi \
     --cpu 1 \
     --max-retries 0 \
     --task-timeout 86400s \
     --set-env-vars "SUPABASE_URL=${SUPABASE_URL},SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY},TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID},TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN},TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER},OPENROUTER_API_KEY=${OPENROUTER_API_KEY},PROXY_PROVIDER=${PROXY_PROVIDER},PROXY_USERNAME=${PROXY_USERNAME},PROXY_PASSWORD=${PROXY_PASSWORD},PROXY_HOST=${PROXY_HOST},PROXY_PORT=${PROXY_PORT},YOUTUBE_API_KEY=${YOUTUBE_API_KEY}" \
-    || gcloud run jobs update $SERVICE_NAME_ARTICLE \
-    --image gcr.io/$PROJECT_ID/$SERVICE_NAME_ARTICLE \
+    || gcloud run jobs update $SERVICE_NAME_IMAGE \
+    --image gcr.io/$PROJECT_ID/$SERVICE_NAME_IMAGE \
     --region $REGION \
     --memory 512Mi \
     --cpu 1 \
@@ -89,9 +87,8 @@ gcloud run jobs create $SERVICE_NAME_ARTICLE \
     --task-timeout 86400s \
     --set-env-vars "SUPABASE_URL=${SUPABASE_URL},SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY},TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID},TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN},TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER},OPENROUTER_API_KEY=${OPENROUTER_API_KEY},PROXY_PROVIDER=${PROXY_PROVIDER},PROXY_USERNAME=${PROXY_USERNAME},PROXY_PASSWORD=${PROXY_PASSWORD},PROXY_HOST=${PROXY_HOST},PROXY_PORT=${PROXY_PORT},YOUTUBE_API_KEY=${YOUTUBE_API_KEY},SUMMARIZER_MODEL=${SUMMARIZER_MODEL}"
 
-echo -e "${GREEN}▶️  Starting Article Worker Job...${NC}"
-gcloud run jobs execute $SERVICE_NAME_ARTICLE --region $REGION
+echo -e "${GREEN}▶️  Starting Image Worker Job...${NC}"
+gcloud run jobs execute $SERVICE_NAME_IMAGE --region $REGION
 
 echo ""
-echo -e "${GREEN}✅ Article Worker Deployment complete!${NC}"
-echo ""
+echo -e "${GREEN}✅ Image Worker Deployment complete!${NC}"

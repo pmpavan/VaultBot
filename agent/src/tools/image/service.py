@@ -6,6 +6,7 @@ from .types import ImageExtractionRequest, ImageExtractionResponse, ImageExtract
 from .extractors.instagram import InstagramExtractor
 from .extractors.tiktok import TikTokExtractor
 from .extractors.youtube import YouTubeCommunityExtractor
+from .extractors.twilio import TwilioExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ class ImageExtractorService:
         self.instagram_extractor = InstagramExtractor()
         self.tiktok_extractor = TikTokExtractor()
         self.youtube_extractor = YouTubeCommunityExtractor()
+        self.twilio_extractor = TwilioExtractor()
 
     def extract(self, request: ImageExtractionRequest) -> ImageExtractionResponse:
         """
@@ -42,6 +44,8 @@ class ImageExtractorService:
             return self.tiktok_extractor.extract(url)
         elif platform == 'youtube':
             return self.youtube_extractor.extract(url)
+        elif platform == 'twilio':
+            return self.twilio_extractor.extract(url)
         else:
             raise UnsupportedPlatformError(f"Unsupported platform: {platform}")
 
@@ -53,5 +57,7 @@ class ImageExtractorService:
             return 'tiktok'
         elif 'youtube.com' in url or 'youtu.be' in url:
             return 'youtube'
+        elif 'api.twilio.com' in url:
+            return 'twilio'
         else:
             return 'unknown'

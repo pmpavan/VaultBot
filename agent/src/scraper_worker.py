@@ -8,8 +8,8 @@ import sys
 import logging
 import hashlib
 import signal
+import time
 from typing import Optional
-from supabase import create_client, Client
 from supabase import create_client, Client
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from messaging_factory import get_messaging_provider
@@ -21,6 +21,8 @@ from tools.scraper.service import ScraperService
 from tools.scraper.types import ScraperRequest
 from tools.normalizer.service import NormalizerService
 from tools.normalizer.types import NormalizerRequest
+from tools.summarizer.service import SummarizerService
+from tools.summarizer.types import SummarizerRequest
 
 # Configure logging
 logging.basicConfig(
@@ -57,6 +59,7 @@ class ScraperWorker:
         
         self.scraper_service = ScraperService()
         self.normalizer_service = NormalizerService()
+        self.summarizer_service = SummarizerService()
         
         # Shutdown flag
         self.shutdown_requested = False
@@ -140,6 +143,17 @@ class ScraperWorker:
             
             print(f"DEBUG: normalized_data is {normalized_data}")
             
+            # 1.6 Generate AI Summary
+            ai_summary = None
+            try:
+                sum_req = SummarizerRequest(
+                    title=metadata.title,
+                    description=metadata.description
+                )
+                ai_summary = self.summarizer_service.generate_summary(sum_req)
+            except Exception as e:
+                logger.warning(f"Summarization failed for {url}: {e}")
+            
             # 2. Deduplication & Persistence
             url_hash = hashlib.sha256(url.encode()).hexdigest()
             
@@ -159,7 +173,8 @@ class ScraperWorker:
                     update_data.update({
                         'normalized_category': normalized_data.category.value,
                         'normalized_price_range': normalized_data.price_range.value if normalized_data.price_range else None,
-                        'normalized_tags': normalized_data.tags
+                        'normalized_tags': normalized_data.tags,
+                        'ai_summary': ai_summary
                     })
 
                 self.supabase.table('link_metadata').update(update_data).eq('id', link_id).execute()
@@ -179,7 +194,8 @@ class ScraperWorker:
                     'scrape_status': 'scraped',
                     'normalized_category': normalized_data.category.value if normalized_data else None,
                     'normalized_price_range': normalized_data.price_range.value if normalized_data and normalized_data.price_range else None,
-                    'normalized_tags': normalized_data.tags if normalized_data else None
+                    'normalized_tags': normalized_data.tags if normalized_data else None,
+                    'ai_summary': ai_summary
                 }).execute()
                 
                 if insert_result.data:

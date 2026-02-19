@@ -7,10 +7,11 @@ import os
 import sys
 import logging
 import signal
+import hashlib
+import time
 from typing import Optional
 from supabase import create_client, Client
-from supabase import create_client, Client
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exponential_backoff, retry_if_exception_type
 from messaging_factory import get_messaging_provider
 
 # Add src to path for imports
@@ -19,6 +20,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from nodes.video_processor import create_video_processor_graph, VideoProcessorState
 from tools.normalizer.service import NormalizerService
 from tools.normalizer.types import NormalizerRequest
+from tools.summarizer.service import SummarizerService
+from tools.summarizer.types import SummarizerRequest
 
 # Configure logging
 logging.basicConfig(
@@ -84,6 +87,7 @@ class VideoWorker:
         # Initialize video processor graph
         self.video_processor_graph = create_video_processor_graph(num_frames=5)
         self.normalizer_service = NormalizerService()
+        self.summarizer_service = SummarizerService()
         
         # Shutdown flag
         self.shutdown_requested = False
@@ -202,10 +206,11 @@ class VideoWorker:
             logger.info(f"Video job {job_id} processed successfully")
 
             # --- Normalize Data ---
+            video_title = result_state.get('metadata', {}).get('title') or "Video Analysis"
             normalized_data = None
             try:
                 norm_req = NormalizerRequest(
-                    title="Video Analysis", # Placeholder, ideally we'd have a title from metadata
+                    title=video_title,
                     description=video_summary,
                     raw_content=None,
                     source_url=video_url
@@ -214,8 +219,18 @@ class VideoWorker:
             except Exception as e:
                 logger.warning(f"Normalization failed for video {video_url}: {e}")
             
+            # --- Generate AI Summary ---
+            ai_summary = None
+            try:
+                sum_req = SummarizerRequest(
+                    title=video_title,
+                    description=video_summary
+                )
+                ai_summary = self.summarizer_service.generate_summary(sum_req)
+            except Exception as e:
+                logger.warning(f"Summarization failed for video {video_url}: {e}")
+            
             # --- Data Persistence Start ---
-            import hashlib
             
             # Generate a consistent hash for the video URL to handle deduplication
             # In a real-world scenario, we might use a hash of the file content, 
@@ -240,7 +255,8 @@ class VideoWorker:
                     update_data.update({
                         'normalized_category': normalized_data.category.value,
                         'normalized_price_range': normalized_data.price_range.value if normalized_data.price_range else None,
-                        'normalized_tags': normalized_data.tags
+                        'normalized_tags': normalized_data.tags,
+                        'ai_summary': ai_summary
                     })
                     
                 self.supabase.table('link_metadata').update(update_data).eq('id', link_id).execute()
@@ -260,7 +276,8 @@ class VideoWorker:
                     'scrape_status': 'scraped',
                     'normalized_category': normalized_data.category.value if normalized_data else None,
                     'normalized_price_range': normalized_data.price_range.value if normalized_data and normalized_data.price_range else None,
-                    'normalized_tags': normalized_data.tags if normalized_data else None
+                    'normalized_tags': normalized_data.tags if normalized_data else None,
+                    'ai_summary': ai_summary
                 }).execute()
                 
                 if insert_result.data:

@@ -6,11 +6,11 @@ Story: 2.4 - Image Post Extraction
 import os
 import sys
 import logging
-import signal
+import hashlib
 from typing import Optional, Dict, Any
 from supabase import create_client, Client
-from supabase import create_client, Client
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+import signal
 from messaging_factory import get_messaging_provider
 
 # Add src to path for imports
@@ -19,6 +19,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from nodes.image_processor import ImageProcessorNode, ImageProcessorState
 from tools.normalizer.service import NormalizerService
 from tools.normalizer.types import NormalizerRequest
+from tools.summarizer.service import SummarizerService
+from tools.summarizer.types import SummarizerRequest
 
 # Configure logging
 logging.basicConfig(
@@ -85,6 +87,7 @@ class ImageWorker:
         from nodes.image_processor import create_image_processor_graph
         self.image_processor = create_image_processor_graph()
         self.normalizer_service = NormalizerService()
+        self.summarizer_service = SummarizerService()
         
         # Shutdown flag
         self.shutdown_requested = False
@@ -143,6 +146,104 @@ class ImageWorker:
             logger.warning(f"Error fetching image job: {e}")
             raise
     
+    def _persist_result(self, url: str, image_summary: str, metadata: Optional[dict], payload: dict, job: dict) -> Optional[str]:
+        """Internal helper to persist image analysis result to database."""
+        try:
+            # --- Normalize Data ---
+            normalized_data = None
+            try:
+                metadata_caption = metadata.get('caption') if metadata else None
+                norm_req = NormalizerRequest(
+                    title=metadata_caption or "Image Analysis",
+                    description=image_summary,
+                    raw_content=None,
+                    source_url=url
+                )
+                normalized_data = self.normalizer_service.normalize(norm_req)
+            except Exception as e:
+                logger.warning(f"Normalization failed for image {url}: {e}")
+            
+            # --- Generate AI Summary ---
+            ai_summary = None
+            try:
+                sum_req = SummarizerRequest(
+                    title=(metadata.get('caption') if metadata else None) or "Image Analysis",
+                    description=image_summary
+                )
+                ai_summary = self.summarizer_service.generate_summary(sum_req)
+            except Exception as e:
+                logger.warning(f"Summarization failed for image {url}: {e}")
+            
+            # --- Data Persistence Start ---
+            url_hash = hashlib.sha256(url.encode()).hexdigest()
+            
+            # Check for existing metadata
+            existing = self.supabase.table('link_metadata').select('id, scrape_count').eq('url_hash', url_hash).limit(1).execute()
+            
+            link_id = None
+            if existing and existing.data and len(existing.data) > 0:
+                link_id = existing.data[0]['id']
+                update_data = {
+                    'scrape_count': (existing.data[0].get('scrape_count') or 1) + 1,
+                    'last_updated_at': 'now()'
+                }
+
+                if normalized_data:
+                    update_data.update({
+                        'normalized_category': normalized_data.category.value,
+                        'normalized_price_range': normalized_data.price_range.value if normalized_data.price_range else None,
+                        'normalized_tags': normalized_data.tags,
+                    })
+                if ai_summary:
+                    update_data['ai_summary'] = ai_summary
+
+                self.supabase.table('link_metadata').update(update_data).eq('id', link_id).execute()
+                logger.info(f"Re-used existing image metadata {link_id}")
+            else:
+                # Insert new metadata
+                metadata = metadata or {}
+                
+                insert_result = self.supabase.table('link_metadata').insert({
+                    'url': url,
+                    'url_hash': url_hash,
+                    'platform': metadata.get('platform', 'unknown'),
+                    'content_type': 'image',
+                    'extraction_strategy': 'vision',
+                    'title': metadata.get('caption', 'Image Analysis')[:255] if metadata.get('caption') else 'Image Analysis',
+                    'description': image_summary, 
+                    'author': metadata.get('author'),
+                    'thumbnail_url': metadata.get('image_urls', [None])[0] if metadata.get('image_urls') else None,
+                    'scrape_status': 'scraped',
+                    'normalized_category': normalized_data.category.value if normalized_data else None,
+                    'normalized_price_range': normalized_data.price_range.value if normalized_data and normalized_data.price_range else None,
+                    'normalized_tags': normalized_data.tags if normalized_data else None,
+                    'ai_summary': ai_summary
+                }).execute()
+                
+                if insert_result.data:
+                    link_id = insert_result.data[0]['id']
+                    logger.info(f"Created new image metadata {link_id}")
+
+            # Create User Saved Link entry
+            user_phone = payload.get('From', '').replace('whatsapp:', '')
+            if link_id and user_phone:
+                source_channel_id = job.get('source_channel_id') or user_phone
+                source_type = job.get('source_type') or 'dm'
+                
+                self.supabase.table('user_saved_links').insert({
+                    'link_id': link_id,
+                    'user_id': user_phone,
+                    'source_channel_id': source_channel_id,
+                    'source_type': source_type,
+                    'attributed_user_id': user_phone
+                }).execute()
+                logger.info(f"Linked image {link_id} to user {user_phone}")
+            
+            return link_id
+        except Exception as e:
+            logger.error(f"Failed to persist result for {url}: {e}")
+            return None
+
     def process_and_update(self, job: dict) -> bool:
         """
         Process image job and update database with results.
@@ -163,149 +264,76 @@ class ImageWorker:
             # Get URL from payload (could be Twilio MediaUrl or a Social Media Link)
             url = None
             
-            # Case 1: Social Media Link (from text message)
-            if 'Body' in payload:
-                # Simple extraction, assumes classifier validated this is an image link
-                # In real flow, classifier might put URL in a specific field
-                # But here we assume Body contains the URL
-                url = payload['Body'].strip()
-                
             # Case 2: Twilio Media Attachment (MMS/WhatsApp Image)
-             # Check up to 10 media items
+            urls = []
+            platform_hint = None
+            
+            # Check up to 10 media items
             for i in range(10): 
                 media_key = f'MediaUrl{i}' if i > 0 else 'MediaUrl0'
                 if media_key in payload:
-                    url = payload[media_key]
-                    break
+                    urls.append(payload[media_key])
+                    platform_hint = 'twilio'
             
-            if not url:
-                raise ValueError("No URL found in payload")
+            # Case 1: Social Media Link (from text message) - only if no direct media
+            if not urls and 'Body' in payload:
+                # Simple extraction, assumes classifier validated this is an image link
+                url_candidate = payload['Body'].strip()
+                if url_candidate.startswith('http'):
+                    urls.append(url_candidate)
             
-            # Determine platform hint from classifier??
-            # The job table might have metadata, but for now we rely on extractor service detection
-            platform_hint = None
+            if not urls:
+                raise ValueError("No URL or Media found in payload")
             
-            # Create state for image processor node
-            state: ImageProcessorState = {
-                'job_id': job_id,
-                'url': url,
-                'message_id': payload.get('MessageSid', job_id),
-                'platform_hint': platform_hint,
-                'image_summary': None,
-                'metadata': None,
-                'error': None
-            }
+            processed_results = []
             
-            # Process image
-            logger.info(f"Processing image for job {job_id}")
-            # Invoke the graph - returns the final state
-            result_state = self.image_processor.invoke(state)
-            
-            # Check for errors
-            if result_state.get('error'):
-                raise Exception(result_state['error'])
-            
-            image_summary = result_state.get('image_summary')
-            if not image_summary:
-                raise Exception("No image summary generated")
-            
-            logger.info(f"Image job {job_id} processed successfully")
-
-            # --- Normalize Data ---
-            normalized_data = None
-            try:
-                metadata_caption = result_state.get('metadata', {}).get('caption') if result_state.get('metadata') else None
-                norm_req = NormalizerRequest(
-                    title=metadata_caption or "Image Analysis",
-                    description=image_summary,
-                    raw_content=None,
-                    source_url=url
-                )
-                normalized_data = self.normalizer_service.normalize(norm_req)
-            except Exception as e:
-                logger.warning(f"Normalization failed for image {url}: {e}")
-            
-            # --- Data Persistence Start ---
-            import hashlib
-            
-            # Generate a consistent hash for the image URL to handle deduplication
-            url_hash = hashlib.sha256(url.encode()).hexdigest()
-            
-            # Check for existing metadata
-            existing = self.supabase.table('link_metadata').select('id, scrape_count').eq('url_hash', url_hash).limit(1).execute()
-            
-            link_id = None
-            if existing and existing.data and len(existing.data) > 0:
-                link_id = existing.data[0]['id']
-                # Increment count
-                # Prepare update data
-                update_data = {
-                    'scrape_count': (existing.data[0].get('scrape_count') or 1) + 1,
-                    'last_updated_at': 'now()'
-                }
-
-                if normalized_data:
-                    update_data.update({
-                        'normalized_category': normalized_data.category.value,
-                        'normalized_price_range': normalized_data.price_range.value if normalized_data.price_range else None,
-                        'normalized_tags': normalized_data.tags
-                    })
-
-                self.supabase.table('link_metadata').update(update_data).eq('id', link_id).execute()
-                logger.info(f"Re-used existing image metadata {link_id}")
-            else:
-                # Insert new metadata
-                metadata = result_state.get('metadata') or {}
-                
-                insert_result = self.supabase.table('link_metadata').insert({
+            for url in urls:
+                # Create state for image processor node
+                state: ImageProcessorState = {
+                    'job_id': job_id,
                     'url': url,
-                    'url_hash': url_hash,
-                    'platform': metadata.get('platform', 'unknown'),
-                    'content_type': 'image',
-                    'extraction_strategy': 'vision',
-                    'title': metadata.get('caption', 'Image Analysis')[:255] if metadata.get('caption') else 'Image Analysis',
-                    'description': image_summary, 
-                    'author': metadata.get('author'),
-                    'thumbnail_url': metadata.get('image_urls', [None])[0] if metadata.get('image_urls') else None,
-                    'thumbnail_url': metadata.get('image_urls', [None])[0] if metadata.get('image_urls') else None,
-                    'scrape_status': 'scraped',
-                    'normalized_category': normalized_data.category.value if normalized_data else None,
-                    'normalized_price_range': normalized_data.price_range.value if normalized_data and normalized_data.price_range else None,
-                    'normalized_tags': normalized_data.tags if normalized_data else None
-                }).execute()
+                    'message_id': payload.get('MessageSid', job_id),
+                    'platform_hint': platform_hint,
+                    'image_summary': None,
+                    'metadata': None,
+                    'error': None
+                }
                 
-                if insert_result.data:
-                    link_id = insert_result.data[0]['id']
-                    logger.info(f"Created new image metadata {link_id}")
-
-            # Create User Saved Link entry
-            user_phone = payload.get('From', '').replace('whatsapp:', '')
-            if link_id and user_phone:
-                # Use source_channel_id if present (group), otherwise user_phone (dm)
-                source_channel_id = job.get('source_channel_id') or user_phone
-                source_type = job.get('source_type') or 'dm'
+                # Process image
+                logger.info(f"Processing image {url} for job {job_id}")
+                result_state = self.image_processor.invoke(state)
                 
-                self.supabase.table('user_saved_links').insert({
+                # Check for errors
+                if result_state.get('error'):
+                    logger.error(f"Failed to process image {url}: {result_state['error']}")
+                    continue # Try next image
+                
+                image_summary = result_state.get('image_summary')
+                if not image_summary:
+                    logger.warning(f"No image summary generated for {url}")
+                    continue
+                
+                # --- Normalize and Summarize (omitted for brevity in loop, using same logic) ---
+                # [Note: I'll keep the normalization/summarization logic here, but refactored]
+                
+                # --- Persistence... (same as before but for this specific URL) ---
+                link_id = self._persist_result(url, image_summary, result_state.get('metadata'), payload, job)
+                
+                processed_results.append({
+                    'url': url,
+                    'image_summary': image_summary,
                     'link_id': link_id,
-                    'user_id': user_phone,
-                    'source_channel_id': source_channel_id,
-                    'source_type': source_type,
-                    'attributed_user_id': user_phone
-                }).execute()
-                logger.info(f"Linked image {link_id} to user {user_phone}")
-            # --- Data Persistence End ---
+                    'metadata': result_state.get('metadata')
+                })
+            
+            if not processed_results:
+                raise Exception("All image processing failed or no images were valid")
+            
+            logger.info(f"Image job {job_id} processed successfully with {len(processed_results)} images")
 
             # Update job with results
-            result_data = {
-                'image_summary': image_summary,
-                'content_type': 'image',
-                'link_id': link_id
-            }
-            if result_state.get('metadata'):
-                result_data['metadata'] = result_state['metadata']
-                
             self.supabase.table('jobs').update({
-                'result': result_data,
+                'result': {'images': processed_results},
                 'status': 'complete'
             }).eq('id', job_id).execute()
             
@@ -343,6 +371,7 @@ class ImageWorker:
                 to = f"whatsapp:{to}"
             
             # Ensure sender is formatted for WhatsApp if recipient is
+            msg = f"✅ Success! I've analyzed your {title} and saved it to your vault."
             self.messaging.send_message(to=to, body=msg)
             logger.info(f"Success message sent to {to}")
         except Exception as e:
@@ -380,6 +409,7 @@ class ImageWorker:
                 return
             
             # Ensure recipient has whatsapp prefix if needed (though payload usually has it)
+            message = self.ERROR_MESSAGES.get(error_category, self.ERROR_MESSAGES['unknown'])
             self.messaging.send_message(to=user_phone, body=f"⚠️ {message}")
             
             logger.info(f"Sent failure notification to {user_phone} for job {job['id']}")

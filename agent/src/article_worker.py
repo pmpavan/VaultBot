@@ -8,9 +8,7 @@ import sys
 import logging
 import signal
 import json
-import hashlib
-from typing import Optional
-from supabase import create_client, Client
+from typing import Optional, Any
 from supabase import create_client, Client
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from messaging_factory import get_messaging_provider
@@ -21,6 +19,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from nodes.article_processor import create_article_processor_graph, ArticleProcessorState
 from tools.normalizer.service import NormalizerService
 from tools.normalizer.types import NormalizerRequest
+from tools.summarizer.service import SummarizerService
+from tools.summarizer.types import SummarizerRequest
 
 # Configure logging
 logging.basicConfig(
@@ -62,6 +62,7 @@ class ArticleWorker:
         # Initialize Processor Graph
         self.article_processor = create_article_processor_graph()
         self.normalizer_service = NormalizerService()
+        self.summarizer_service = SummarizerService()
         
         # Shutdown flag
         self.shutdown_requested = False
@@ -169,8 +170,6 @@ class ArticleWorker:
                 else:
                     logger.warning(f"Partial error in job {job_id}: {result_state['error']}")
 
-                    logger.warning(f"Partial error in job {job_id}: {result_state['error']}")
-
             # Normalize Data
             normalized_data = None
             try:
@@ -186,8 +185,20 @@ class ArticleWorker:
             except Exception as e:
                 logger.warning(f"Normalization failed for article {url}: {e}")
 
+            # Generate AI Summary
+            ai_summary = None
+            try:
+                content_text = result_state.get('text', '') or ''
+                sum_req = SummarizerRequest(
+                    title=result_state.get('title'),
+                    description=content_text[:5000] # Truncate to avoid token overflow
+                )
+                ai_summary = self.summarizer_service.generate_summary(sum_req)
+            except Exception as e:
+                logger.warning(f"Summarization failed for article {url}: {e}")
+
             # Persist Data
-            self._persist_results(job, url, result_state, normalized_data)
+            self._persist_results(job, url, result_state, normalized_data, ai_summary)
             
             # Notify User
             title = result_state.get('title') or "Web Article"
@@ -202,7 +213,7 @@ class ArticleWorker:
             self._mark_job_failed(job, 'extraction_failed') # Categorize better in real app
             return False
 
-    def _persist_results(self, job: dict, url: str, state: ArticleProcessorState, normalized_data: Optional[Any] = None):
+    def _persist_results(self, job: dict, url: str, state: ArticleProcessorState, normalized_data: Optional[Any] = None, ai_summary: Optional[str] = None):
         """Save results to database."""
         job_id = job['id']
         url_hash = hashlib.sha256(url.encode()).hexdigest()
@@ -222,7 +233,8 @@ class ArticleWorker:
                 update_data.update({
                     'normalized_category': normalized_data.category.value,
                     'normalized_price_range': normalized_data.price_range.value if normalized_data.price_range else None,
-                    'normalized_tags': normalized_data.tags
+                    'normalized_tags': normalized_data.tags,
+                    'ai_summary': ai_summary
                 })
             self.supabase.table('link_metadata').update(update_data).eq('id', link_id).execute()
         else:
@@ -246,7 +258,8 @@ class ArticleWorker:
                 'scrape_status': 'scraped' if not state.get('error') else 'partial',
                 'normalized_category': normalized_data.category.value if normalized_data else None,
                 'normalized_price_range': normalized_data.price_range.value if normalized_data and normalized_data.price_range else None,
-                'normalized_tags': normalized_data.tags if normalized_data else None
+                'normalized_tags': normalized_data.tags if normalized_data else None,
+                'ai_summary': ai_summary
             }
             
             # Handle image if available

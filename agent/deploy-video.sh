@@ -43,7 +43,8 @@ gcloud run jobs create $SERVICE_NAME \
     --set-env-vars "TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}" \
     --set-env-vars "TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}" \
     --set-env-vars "TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}" \
-    --set-env-vars "OPENROUTER_API_KEY=${OPENROUTER_API_KEY}"
+    --set-env-vars "OPENROUTER_API_KEY=${OPENROUTER_API_KEY}" \
+    --set-env-vars "SUMMARIZER_MODEL=${SUMMARIZER_MODEL}"
 
 echo "Starting Video Worker Job..."
 gcloud run jobs execute $SERVICE_NAME --region $REGION

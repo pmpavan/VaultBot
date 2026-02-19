@@ -1,6 +1,6 @@
 # Story 2.8: Raw Image Processing
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -13,86 +13,81 @@ so that I can capture visual information (receipts, fliers, menus) without typin
 ## Acceptance Criteria
 
 1. **Given** a WhatsApp Image message (MIME type image/jpeg, image/png)
-2. **When** the Ingestion Service processes it
-3. **Then** it MUST download the image from Twilio Media URL
+2. **When** the Image Worker processes it
+3. **Then** it MUST download the image from the Twilio Media URL
 4. **And** Send the image to the Vision API (Story 2.1)
 5. **And** Use a prompt to "Describe this image in detail and extract key information (text, objects, context)."
-6. **And** Store the resulting description in the `summary` field of the `jobs` (or `items`) table
+6. **And** Store the resulting description in the `summary` field of the `link_metadata` table (as `ai_summary`)
 7. **And** Support processing multiple images in a single message if applicable
-8. **And** (Optional) Save the image to Supabase Storage for long-term retention and update the `snapshot_url` or similar field
+8. **And** (Optional) Save the image to Supabase Storage (`user_uploads` bucket) for long-term retention and update the `thumbnail_url` or similar field
 
 ## Tasks / Subtasks
 
-- [ ] **Define Data Contracts** (AC: 1, 6)
-  - [ ] Update `Job` payload schema to handle `media_url` and `mime_type`
-  - [ ] Define `ImageProcessingRequest` and `ImageProcessingResponse`
-- [ ] **Implement Image Downloader** (AC: 3)
-  - [ ] Create `ImageDownloader` tool/utility
-  - [ ] Handle Twilio authentication if required for media URLs
-  - [ ] Validate image format (JPEG/PNG/WEBP)
-- [ ] **Implement Image Processor Node** (AC: 4, 5)
-  - [ ] Create `agent/src/nodes/image_processor.py`
-  - [ ] Integrate with `VisionService` (Story 2.1)
-  - [ ] Construct appropriate prompt for general image analysis
-  - [ ] Handle Vision API responses
-- [ ] **Implement Storage Integration (Optional but Recommended)** (AC: 8)
-  - [ ] Upload downloaded image to Supabase Storage bucket (`user_uploads`)
-  - [ ] Get public/signed URL
-  - [ ] Store this URL in the database instead of the ephemeral Twilio URL
+- [ ] **Implement Twilio Media Extractor** (AC: 1, 3)
+  - [ ] Create `agent/src/tools/image/extractors/twilio.py`
+  - [ ] Implement `TwilioExtractor` for raw media URLs
+  - [ ] Integrate with `ImageExtractorService` (route unknown/generic URLs)
+- [ ] **Implement Image Downloader Tool** (AC: 3)
+  - [ ] Create `agent/src/tools/image/downloader.py`
+  - [ ] Handle Twilio Basic Auth (Account SID + Auth Token) for media downloads
+  - [ ] Support byte-stream extraction for the Vision API
+- [ ] **Enhance Image Processor Node** (AC: 4, 5)
+  - [ ] Ensure `ImageProcessorNode` correctly handles the raw image bytes from the extractor
+  - [ ] Verify vision prompt alignment with story requirements
+- [ ] **Implement Storage Persistence (Optional)** (AC: 8)
+  - [ ] Add `agent/src/tools/image/storage.py` for Supabase Storage integration
+  - [ ] Upload raw images to `user_uploads` bucket
+  - [ ] Store permanent URL in `link_metadata.thumbnail_url`
 - [ ] **Testing**
-  - [ ] Mock tests for Image Processor Node
-  - [ ] Live test with a sample image URL
+  - [ ] Unit tests for `TwilioExtractor` and `ImageDownloader`
+  - [ ] Integration test with mock Twilio Media URLs
 
 ## Dev Notes
 
 ### Architecture Patterns & Constraints
 
-- **Location:** `agent/src/nodes/image_processor.py`
-- **Tool Location:** `agent/src/tools/image/` (if complex logic needed)
-- **Library:** `Pillow` (PIL) for image manipulation/validation. `httpx` or `requests` for downloading.
-- **Visual API:** Reuse `VisionService` from Story 2.1.
+- **Async Brain Pattern:** The `ImageWorker` already polls for `content_type='image'`.
+- **Extractor Pattern:** Follow the pattern in `agent/src/tools/image/service.py` to add a new extractor.
+- **Library Requirements:** `Pillow` for image validation/thumbnail generation (already in `requirements.txt`). `httpx` for downloads.
 
 ### Project Structure Notes
 
-**Recommended File Structure:**
-```
-agent/src/nodes/image_processor.py
-agent/src/tools/image/
-├── __init__.py
-├── downloader.py       # Handles Twilio Media URL download
-└── storage.py          # Handles Supabase Storage upload (if not generic)
-```
+**New Files:**
+- `agent/src/tools/image/extractors/twilio.py`
+- `agent/src/tools/image/downloader.py`
+- `agent/src/tools/image/storage.py` (Optional)
 
-**Dependency Updates:**
-- Add `Pillow` to `agent/requirements.txt`
-- Ensure `supabase` client is configured for Storage access
+**Modified Files:**
+- `agent/src/tools/image/service.py` (Add routing logic)
+- `agent/src/tools/image/__init__.py`
 
-### Latest Technical Information
+### Git Intelligence & Previous Learnings
 
-- **Twilio Media URLs:** require Basic Auth (Account SID + Auth Token) if "Enforce HTTP Basic Auth for Media Access" is enabled in Twilio Console. The agent should handle this if configured.
-- **Supabase Storage:** Use `supabase-py` client `storage.from_('bucket').upload(...)`.
+- **From Story 2.4:** The `ImageWorker` is already capable of handling `MediaUrl0` if the classifier identifies it as an image.
+- **From Story 2.1:** `VisionService` is the unified tool for image analysis.
 
 ### References
 
-- **Story 2.1:** [2-1-vision-api-integration.md](file:///Users/apple/P1/Projects/Web/VaultBot/_bmad-output/implementation-artifacts/2-1-vision-api-integration.md)
 - **Architecture:** [architecture.md](file:///Users/apple/P1/Projects/Web/VaultBot/_bmad-output/planning-artifacts/architecture.md)
+- **Vision Tool:** `agent/src/tools/vision/service.py`
+- **Image Service:** `agent/src/tools/image/service.py`
 
 ## Dev Agent Record
 
 ### Agent Model Used
 
-Claude 3.7 Sonnet (Anthropic)
+Antigravity (BMAD Core 6.0 Engine)
 
 ### Debug Log References
 
-No issues.
-
 ### Completion Notes List
 
-- Created Story 2.8 based on user request.
-- Added `Pillow` requirement note.
+- Generated comprehensive story context for Raw Image Processing.
+- Identified the need for `TwilioExtractor`.
+- Documented Twilio Auth requirements for media downloads.
 
 ### File List
 
-- `agent/src/nodes/image_processor.py`
-- `agent/src/tools/image/downloader.py`
+- [NEW] `agent/src/tools/image/extractors/twilio.py`
+- [NEW] `agent/src/tools/image/downloader.py`
+- [MODIFY] `agent/src/tools/image/service.py`

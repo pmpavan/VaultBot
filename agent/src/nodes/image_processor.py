@@ -91,7 +91,7 @@ class ImageProcessorNode:
                     # Create vision request
                     vision_request = VisionRequest(
                         image_input=image_data_url,
-                        prompt="Describe this image in detail. Focus on objects, text, people, and context. Be concise but informative.",
+                        prompt="Describe this image in detail and extract key information (text, objects, context). Focus on being thorough and identifying specific details.",
                         model_provider="openai"
                     )
                     
