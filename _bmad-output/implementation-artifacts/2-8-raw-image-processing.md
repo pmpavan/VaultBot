@@ -1,6 +1,6 @@
 # Story 2.8: Raw Image Processing
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -23,24 +23,24 @@ so that I can capture visual information (receipts, fliers, menus) without typin
 
 ## Tasks / Subtasks
 
-- [ ] **Implement Twilio Media Extractor** (AC: 1, 3)
-  - [ ] Create `agent/src/tools/image/extractors/twilio.py`
-  - [ ] Implement `TwilioExtractor` for raw media URLs
-  - [ ] Integrate with `ImageExtractorService` (route unknown/generic URLs)
-- [ ] **Implement Image Downloader Tool** (AC: 3)
-  - [ ] Create `agent/src/tools/image/downloader.py`
-  - [ ] Handle Twilio Basic Auth (Account SID + Auth Token) for media downloads
-  - [ ] Support byte-stream extraction for the Vision API
-- [ ] **Enhance Image Processor Node** (AC: 4, 5)
-  - [ ] Ensure `ImageProcessorNode` correctly handles the raw image bytes from the extractor
-  - [ ] Verify vision prompt alignment with story requirements
+- [x] **Implement Twilio Media Extractor** (AC: 1, 3)
+  - [x] Create `agent/src/tools/image/extractors/twilio.py`
+  - [x] Implement `TwilioExtractor` for raw media URLs
+  - [x] Integrate with `ImageExtractorService` (route unknown/generic URLs)
+- [x] **Implement Image Downloader Tool** (AC: 3)
+  - [x] Create `agent/src/tools/image/downloader.py`
+  - [x] Handle Twilio Basic Auth (Account SID + Auth Token) for media downloads
+  - [x] Support byte-stream extraction for the Vision API
+- [x] **Enhance Image Processor Node** (AC: 4, 5)
+  - [x] Ensure `ImageProcessorNode` correctly handles the raw image bytes from the extractor
+  - [x] Verify vision prompt alignment with story requirements
 - [ ] **Implement Storage Persistence (Optional)** (AC: 8)
   - [ ] Add `agent/src/tools/image/storage.py` for Supabase Storage integration
   - [ ] Upload raw images to `user_uploads` bucket
   - [ ] Store permanent URL in `link_metadata.thumbnail_url`
-- [ ] **Testing**
-  - [ ] Unit tests for `TwilioExtractor` and `ImageDownloader`
-  - [ ] Integration test with mock Twilio Media URLs
+- [x] **Testing**
+  - [x] Unit tests for `TwilioExtractor` and `ImageDownloader`
+  - [x] Integration test with mock Twilio Media URLs
 
 ## Dev Notes
 
@@ -91,3 +91,13 @@ Antigravity (BMAD Core 6.0 Engine)
 - [NEW] `agent/src/tools/image/extractors/twilio.py`
 - [NEW] `agent/src/tools/image/downloader.py`
 - [MODIFY] `agent/src/tools/image/service.py`
+- [MODIFY] `agent/src/image_worker.py`
+- [MODIFY] `agent/src/nodes/image_processor.py`
+- [NEW] `agent/tests/test_twilio_tools.py`
+- [NEW] `agent/tests/test_image_worker_integration.py`
+
+## Senior Developer Review (AI)
+
+- Found that tasks were completed but not marked. Fixed automatically.
+- Found missing integration tests for the ImageWorker. Created `test_image_worker_integration.py`.
+- Found undocumented file modifications in the worker and processor. Added them to the File List.

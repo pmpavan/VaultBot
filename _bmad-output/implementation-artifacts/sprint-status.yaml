@@ -58,7 +58,7 @@ development_status:
   2-5-text-article-parser: done
   2-6-data-normalizer-agent: done
   2-7-natural-language-summary-generator: done
-  2-8-raw-image-processing: review
+  2-8-raw-image-processing: done
   2-9-video-post-extraction-social-media: ready-for-dev
   epic-2-retrospective: optional
 
