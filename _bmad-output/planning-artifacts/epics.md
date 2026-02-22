@@ -58,6 +58,7 @@ NFR-08 (Scale): Vector index supports 100k items < 100ms.
 - Card Layout: Add "Saved by [Name]" footer for group items.
 - Privacy Flows: Implement `/pause` and `/resume` commands with visual feedback.
 - Input Feedback: Immediate Emoji Reactions ("Memo" = Ack, "Bolt" = Done).
+- Event-Driven Webhook Transition: Python workers must move from polling loops to on-demand HTTP execution to minimize GCP costs (Scale-to-Zero).
 
 ### FR Coverage Map
 
@@ -449,7 +450,50 @@ So that I can get a detailed summary of the video content, not just the caption.
 **When** the Scraper Node processes it
 **Then** it MUST download the video content using `yt-dlp` (cookie compliant)
 **And** Extract 3-5 distinct keyframes (Reusing Story 2.3 logic)
-**And** Send these frames to the Vision API (Story 2.1)
 **And** Aggregate the frame descriptions into a single "Video Content Summary"
 **And** Combine this with the platform metadata (Title, Author, Caption from Story 2.2)
 **And** Handle standard video duration limits (e.g. process only first 2 minutes if long)
+
+### Epic 2.10: Event-Driven Worker Architecture
+**Goal:** Transition the standalone Python workers from long-running polling loops to on-demand, event-driven HTTP endpoints to drastically reduce idle GCP compute costs and scale to zero.
+**User Value:** "The system processes my content immediately when I send it, and costs the developer almost nothing when the bot is not in use."
+**FRs Covered:** NFR-09, NFR-10, Additional Architecture Requirements
+
+### Story 2.10.1: Worker HTTP Framework Migration
+As a Developer,
+I want to wrap the existing worker logic in a lightweight HTTP framework (like FastAPI or Flask),
+So that Cloud Run can trigger the worker on-demand via a webhook instead of the worker polling continuously.
+
+**Acceptance Criteria:**
+**Given** an existing Python worker script (e.g. `video_worker.py`) running a `while` loop
+**When** the migration is applied
+**Then** the `run_loop` MUST be replaced with an HTTP POST endpoint (e.g. `/process`)
+**And** the endpoint MUST accept a JSON payload identifying the job ID or the data to process
+**And** the application MUST listen on the `$PORT` environment variable required by Cloud Run
+**And** the container MUST cleanly exit or scale to zero when no requests are active
+
+### Story 2.10.2: Supabase Webhook Triggers
+As a System Architect,
+I want the database to automatically invoke the worker endpoints when a new job is ready,
+So that jobs are processed instantly without polling delays.
+
+**Acceptance Criteria:**
+**Given** the HTTP-enabled workers deployed on Cloud Run
+**When** a new row is inserted into the `jobs` table with `status='pending'` 
+**Then** a Supabase Database Webhook (via `pg_net` or Trigger) MUST fire
+**And** the webhook MUST route to the correct Cloud Run worker based on the `content_type` (e.g., `content_type='video'` routes to the video worker URL)
+**And** the webhook MUST include a secure custom header (e.g. `X-VaultBot-Worker-Secret`) to authenticate the request to the worker
+
+### Story 2.10.3: Worker Security & Dead-Letter Fallback
+As an Admin,
+I want to ensure the HTTP endpoints are secure and that failed webhook triggers don't result in permanently lost jobs,
+So that the system remains robust and reliable in a serverless environment.
+
+**Acceptance Criteria:**
+**Given** the webhooks are active and firing to the Cloud Run URLs
+**When** the worker HTTP endpoint receives a request
+**Then** it MUST validate the custom secret header before processing
+**And** reject unauthorized requests with a `401 Unauthorized`
+**Furthermore**, **Given** a scenario where a webhook fails to fire or a worker crashes
+**When** a job remains `status='pending'` or `status='processing'` beyond a timeout threshold (e.g., 15 minutes)
+**Then** a fallback Sweeper Cron Job (e.g. Google Cloud Scheduler) MUST trigger to reclaim and retry or route the stalled job to the Dead Letter Queue.

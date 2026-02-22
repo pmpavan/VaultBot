@@ -11,7 +11,7 @@ import hashlib
 import time
 from typing import Optional
 from supabase import create_client, Client
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exponential_backoff, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from messaging_factory import get_messaging_provider
 
 # Add src to path for imports

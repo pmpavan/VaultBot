@@ -139,11 +139,11 @@ class ScraperWorker:
                 normalized_data = self.normalizer_service.normalize(norm_req)
             except Exception as e:
                 logger.warning(f"Normalization failed for {url}: {e}")
-                print(f"DEBUG: Normalization exception: {e}")
+                logger.debug(f"Normalization exception: {e}")
             
-            print(f"DEBUG: normalized_data is {normalized_data}")
+            logger.debug(f"normalized_data is {normalized_data}")
             
-            # 1.6 Generate AI Summary
+            # 1.6 Generate AI Summary (Text)
             ai_summary = None
             try:
                 sum_req = SummarizerRequest(
@@ -153,8 +153,45 @@ class ScraperWorker:
                 ai_summary = self.summarizer_service.generate_summary(sum_req)
             except Exception as e:
                 logger.warning(f"Summarization failed for {url}: {e}")
-            
-            # 2. Deduplication & Persistence
+                
+            # 1.7 Visual AI Summary (Video)
+            from tools.scraper.types import ContentType
+            if metadata.content_type == ContentType.VIDEO:
+                try:
+                    from tools.video.downloader import SocialVideoDownloader
+                    from tools.video.service import VideoProcessingService
+                    from tools.video.types import VideoProcessingRequest
+                    
+                    proxy_url = os.environ.get('PROXY_URL')
+                    downloader = SocialVideoDownloader(proxy_url=proxy_url)
+                    video_path = downloader.download(url)
+                    
+                    try:
+                        video_service = VideoProcessingService()
+                        vid_req = VideoProcessingRequest(
+                            video_path=video_path,
+                            message_id=job_id
+                        )
+                        vid_resp = video_service.process_video(vid_req)
+                        metadata.visual_summary = vid_resp.summary
+                        
+                        if ai_summary and metadata.visual_summary:
+                            ai_summary = f"{ai_summary}\n\nVisual Analysis: {metadata.visual_summary}"
+                        elif metadata.visual_summary:
+                            ai_summary = f"Visual Analysis: {metadata.visual_summary}"
+                    finally:
+                        if os.path.exists(video_path):
+                            try:
+                                os.unlink(video_path)
+                            except OSError:
+                                pass
+                except Exception as e:
+                    logger.warning(f"Video visual extraction failed for {url}: {e}")
+                    warning_msg = "⚠️ Visual extraction failed or was blocked by the platform."
+                    if ai_summary:
+                        ai_summary = f"{ai_summary}\n\n{warning_msg}"
+                    else:
+                        ai_summary = warning_msg
             url_hash = hashlib.sha256(url.encode()).hexdigest()
             
             # Check for existing metadata
@@ -246,6 +283,7 @@ class ScraperWorker:
                 to = f"whatsapp:{to}"
             
             # Ensure sender is formatted for WhatsApp if recipient is
+            msg = f"✅ Successfully saved: {title or 'Link'} from {platform or 'Unknown'}"
             self.messaging.send_message(to=to, body=msg)
         except Exception as e:
             logger.error(f"Failed to send success message: {e}")
@@ -275,8 +313,6 @@ class ScraperWorker:
             logger.error(f"Failed to notify user of failure: {e}")
 
     def run_loop(self):
-        logger.info("Scraper worker polling started...")
-        import time
         logger.info("Scraper worker polling started...")
         import time
         while not self.shutdown_requested:

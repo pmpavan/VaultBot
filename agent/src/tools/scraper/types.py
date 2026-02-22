@@ -66,6 +66,9 @@ class ScraperResponse(BaseModel):
     
     # Full text content (for articles/blogs - Story 2.5)
     full_text: Optional[str] = Field(None, description="Full article text (if applicable)")
+    
+    # Visual extraction
+    visual_summary: Optional[str] = Field(None, description="Detailed visual content summary extracted from video frames")
 
     class Config:
         json_schema_extra = {
@@ -79,7 +82,8 @@ class ScraperResponse(BaseModel):
                 "thumbnail_url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
                 "duration": 212,
                 "publish_date": "2009-10-25T00:00:00Z",
-                "raw_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+                "raw_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "visual_summary": "Rick Astley dancing and singing in various outfits and locations."
             }
         }
 

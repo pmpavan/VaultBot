@@ -3,17 +3,24 @@ Data contracts for video processing.
 """
 
 from typing import Optional, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class VideoProcessingRequest(BaseModel):
     """
     Request model for video processing.
     """
-    video_url: str = Field(..., description="URL to the video file (e.g., Twilio MediaUrl)")
+    video_url: Optional[str] = Field(None, description="URL to the video file (e.g., Twilio MediaUrl)")
+    video_path: Optional[str] = Field(None, description="Local path to the downloaded video file")
     message_id: str = Field(..., description="WhatsApp message ID for tracking")
     auth_token: Optional[str] = Field(None, description="Authentication token for video download (e.g., Twilio auth)")
     account_sid: Optional[str] = Field(None, description="Twilio Account SID for Basic Auth")
+
+    @model_validator(mode='after')
+    def check_url_or_path(self) -> 'VideoProcessingRequest':
+        if not self.video_url and not self.video_path:
+            raise ValueError("Either video_url or video_path must be provided")
+        return self
 
 
 class VideoProcessingResponse(BaseModel):

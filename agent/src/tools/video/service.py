@@ -4,7 +4,7 @@ Video processing service that orchestrates download, extraction, and analysis.
 
 import tempfile
 import os
-import requests
+import os
 from typing import Optional
 from .types import (
     VideoProcessingRequest,
@@ -13,6 +13,7 @@ from .types import (
     VideoExtractionError
 )
 from .processor import VideoFrameExtractor
+from .downloader import DirectVideoDownloader
 from ..vision.service import VisionService
 from ..vision.types import VisionRequest
 
@@ -32,88 +33,7 @@ class VideoProcessingService:
         self.extractor = VideoFrameExtractor(num_frames=num_frames)
         self.vision_service = VisionService()
 
-    def download_video(
-        self,
-        video_url: str,
-        auth_token: Optional[str] = None,
-        account_sid: Optional[str] = None,
-    ) -> str:
-        """
-        Download video from URL to temporary file.
-        
-        Args:
-            video_url: URL to download video from
-            auth_token: Optional authentication token (e.g., for Twilio)
-            
-        Returns:
-            Path to downloaded temporary file
-            
-        Raises:
-            VideoDownloadError: If download fails
-        """
-        temp_path = None
-        temp_file = None
-        
-        try:
-            # Prepare headers with authentication if provided
-            headers = {}
-            auth = None
-            if account_sid and auth_token:
-                # For Twilio MediaUrl, use HTTP Basic Auth (SID as username)
-                auth = (account_sid, auth_token)
-            elif auth_token:
-                headers['Authorization'] = f'Bearer {auth_token}'
-            
-            # Download video
-            response = requests.get(video_url, headers=headers, auth=auth, stream=True, timeout=30)
-            response.raise_for_status()
-            
-            # Save to temporary file
-            # Determine file extension from URL or content-type
-            content_type = response.headers.get('content-type', '')
-            if 'mp4' in content_type or video_url.endswith('.mp4'):
-                suffix = '.mp4'
-            elif 'mov' in content_type or video_url.endswith('.mov'):
-                suffix = '.mov'
-            else:
-                # Default to mp4
-                suffix = '.mp4'
-            
-            # Create temporary file
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-            temp_path = temp_file.name
-            
-            # Write video content
-            for chunk in response.iter_content(chunk_size=8192):
-                temp_file.write(chunk)
-            
-            temp_file.close()
-            
-            return temp_path
-            
-        except requests.RequestException as e:
-            # Clean up temp file on error
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.unlink(temp_path)
-                except Exception:
-                    pass
-            raise VideoDownloadError(f"Failed to download video from {video_url}: {str(e)}")
-        except Exception as e:
-            # Clean up temp file on error
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.unlink(temp_path)
-                except Exception:
-                    pass
-            raise VideoDownloadError(f"Unexpected error downloading video: {str(e)}")
-        finally:
-            # Ensure file handle is closed
-            if temp_file and not temp_file.closed:
-                try:
-                    temp_file.close()
-                except Exception:
-                    pass
+
 
     def aggregate_descriptions(self, descriptions: list[str]) -> str:
         """
@@ -167,15 +87,20 @@ class VideoProcessingService:
         temp_video_path = None
         
         try:
-            # Step 1: Download video
-            temp_video_path = self.download_video(
-                request.video_url,
-                request.auth_token,
-                request.account_sid
-            )
+            if request.video_path:
+                video_path_to_process = request.video_path
+            else:
+                # Step 1: Download video using DirectVideoDownloader
+                downloader = DirectVideoDownloader()
+                temp_video_path = downloader.download(
+                    request.video_url,
+                    request.auth_token,
+                    request.account_sid
+                )
+                video_path_to_process = temp_video_path
             
             # Step 2: Extract frames
-            frames, duration = self.extractor.extract_frames(temp_video_path)
+            frames, duration = self.extractor.extract_frames(video_path_to_process)
             
             # Step 3: Analyze each frame with Vision API
             frame_descriptions = []

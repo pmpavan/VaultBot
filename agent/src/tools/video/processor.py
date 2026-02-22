@@ -49,6 +49,12 @@ class VideoFrameExtractor:
             fps = cap.get(cv2.CAP_PROP_FPS)
             duration = total_frames / fps if fps > 0 else 0
             
+            # AC 8: Process only the first 2 minutes (120 seconds) if long
+            MAX_DURATION_SEC = 120.0
+            if duration > MAX_DURATION_SEC:
+                total_frames = int(MAX_DURATION_SEC * fps)
+                duration = MAX_DURATION_SEC
+                
             if total_frames == 0:
                 raise VideoExtractionError("Video has no frames")
             
