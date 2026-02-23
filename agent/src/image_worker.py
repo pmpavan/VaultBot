@@ -1,17 +1,21 @@
 """
 Image Worker - Processes image jobs and extracts content summaries
 Story: 2.4 - Image Post Extraction
+Story: 2.10.1 - Worker HTTP Framework Migration
 """
 
 import os
 import sys
 import logging
 import hashlib
+from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any
 from supabase import create_client, Client
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 import signal
 from messaging_factory import get_messaging_provider
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -28,6 +32,50 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Module-level singleton worker — created once at startup, not per-request
+_worker: Optional["ImageWorker"] = None
+
+
+def _handle_shutdown(signum, frame):
+    """Handle SIGTERM/SIGINT at the module level (runs in main thread)."""
+    logger.info(f"Received signal {signum}, shutting down...")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan: initialise the worker once at container startup."""
+    global _worker
+    signal.signal(signal.SIGTERM, _handle_shutdown)
+    signal.signal(signal.SIGINT, _handle_shutdown)
+    _worker = ImageWorker()
+    yield
+    _worker = None
+
+
+# FastAPI Application
+app = FastAPI(title="Image Worker", lifespan=lifespan)
+
+
+class ProcessRequest(BaseModel):
+    job_id: str = Field(..., min_length=1, description="The UUID of the job to process")
+
+
+@app.post("/process")
+def process_job(request: ProcessRequest):
+    """Webhook endpoint to process a specific image job."""
+    if _worker is None:
+        raise HTTPException(status_code=503, detail="Worker not initialised")
+    job = _worker.fetch_and_lock_specific_job(request.job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {request.job_id} not found or not in pending state")
+
+    success = _worker.process_and_update(job)
+    if success:
+        return {"status": "success", "job_id": request.job_id}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to process job")
 
 
 class ImageWorker:
@@ -83,23 +131,12 @@ class ImageWorker:
             logger.error(f"Failed to initialize messaging provider: {e}")
             raise
         
-        # Initialize image processor graph
         from nodes.image_processor import create_image_processor_graph
         self.image_processor = create_image_processor_graph()
         self.normalizer_service = NormalizerService()
         self.summarizer_service = SummarizerService()
-        
-        # Shutdown flag
-        self.shutdown_requested = False
-        
-        # Register signal handlers
-        signal.signal(signal.SIGTERM, self._handle_shutdown)
-        signal.signal(signal.SIGINT, self._handle_shutdown)
 
-    def _handle_shutdown(self, signum, frame):
-        """Handle shutdown signals."""
-        logger.info(f"Received signal {signum}, scheduling shutdown...")
-        self.shutdown_requested = True
+        logger.info("ImageWorker initialized successfully")
     
     @retry(
         stop=stop_after_attempt(3),
@@ -145,6 +182,34 @@ class ImageWorker:
         except Exception as e:
             logger.warning(f"Error fetching image job: {e}")
             raise
+
+    def fetch_and_lock_specific_job(self, job_id: str) -> Optional[dict]:
+        """Fetch a specific pending image job by ID and update to 'processing'."""
+        try:
+            result = self.supabase.table('jobs').select('*').eq(
+                'id', job_id
+            ).eq(
+                'status', 'pending'
+            ).limit(1).execute()
+            
+            if not result.data:
+                return None
+            
+            job = result.data[0]
+            
+            # Atomic update
+            update_result = self.supabase.table('jobs').update({
+                'status': 'processing'
+            }).eq('id', job_id).eq('status', 'pending').execute()
+            
+            if update_result.data:
+                logger.info(f"Claimed specific image job {job_id}")
+                return job
+            
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching specific image job {job_id}: {e}")
+            return None
     
     def _persist_result(self, url: str, image_summary: str, metadata: Optional[dict], payload: dict, job: dict) -> Optional[str]:
         """Internal helper to persist image analysis result to database."""
@@ -417,51 +482,4 @@ class ImageWorker:
         except Exception as e:
             logger.error(f"Failed to send notification for job {job['id']}: {e}")
     
-    def process_one_job(self) -> bool:
-        """Process one image job from the queue."""
-        try:
-            job = self.fetch_and_lock_image_job()
-            
-            if not job:
-                return False
-            
-            self.process_and_update(job)
-            return True
-            
-        except Exception as e:
-            logger.error(f"Unexpected error in process_one_job: {e}", exc_info=True)
-            return False
-    
-    def run_loop(self, max_iterations: Optional[int] = None):
-        """Run worker loop to process image jobs."""
-        logger.info(f"Starting image worker loop (max_iterations={max_iterations})")
-        iteration = 0
-        
-        while not self.shutdown_requested:
-            if max_iterations and iteration >= max_iterations:
-                logger.info(f"Reached max iterations ({max_iterations}), stopping")
-                break
-            
-            if self.shutdown_requested:
-                logger.info("Shutdown requested, stopping loop")
-                break
-            
-            processed = self.process_one_job()
-            
-            if not processed:
-                import time
-                logger.debug("No image jobs available, sleeping for 5 seconds")
-                time.sleep(5)
-            
-            iteration += 1
 
-
-if __name__ == '__main__':
-    try:
-        worker = ImageWorker()
-        worker.run_loop()
-    except KeyboardInterrupt:
-        logger.info("Image worker stopped by user")
-    except Exception as e:
-        logger.critical(f"Image worker crashed: {e}", exc_info=True)
-        sys.exit(1)

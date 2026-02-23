@@ -1,17 +1,20 @@
 """
 Classifier Worker - Processes pending jobs and classifies content
 Story: 1.3 - Payload Parser & Classification
+Story: 2.10.1 - Worker HTTP Framework Migration
 """
 
 import os
 import sys
 import logging
 import signal
+from contextlib import asynccontextmanager
 from typing import Optional
-from supabase import create_client, Client
 from supabase import create_client, Client
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from messaging_factory import get_messaging_provider
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -24,6 +27,50 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Module-level singleton worker — created once at startup, not per-request
+_worker: Optional["ClassifierWorker"] = None
+
+
+def _handle_shutdown(signum, frame):
+    """Handle SIGTERM/SIGINT at the module level (runs in main thread)."""
+    logger.info(f"Received signal {signum}, shutting down...")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan: initialise the worker once at container startup."""
+    global _worker
+    signal.signal(signal.SIGTERM, _handle_shutdown)
+    signal.signal(signal.SIGINT, _handle_shutdown)
+    _worker = ClassifierWorker()
+    yield
+    _worker = None
+
+
+# FastAPI Application
+app = FastAPI(title="Classifier Worker", lifespan=lifespan)
+
+
+class ProcessRequest(BaseModel):
+    job_id: str = Field(..., min_length=1, description="The UUID of the job to process")
+
+
+@app.post("/process")
+def process_job(request: ProcessRequest):
+    """Webhook endpoint to process a specific classifier job."""
+    if _worker is None:
+        raise HTTPException(status_code=503, detail="Worker not initialised")
+    job = _worker.fetch_and_lock_specific_job(request.job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {request.job_id} not found or not in pending state")
+
+    success = _worker.classify_and_update(job)
+    if success:
+        return {"status": "success", "job_id": request.job_id}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to process job")
 
 
 class ClassifierWorker:
@@ -38,12 +85,9 @@ class ClassifierWorker:
     
     def __init__(self):
         """Initialize Supabase and Twilio clients with validation."""
-        # Validate required environment variables
         required_env_vars = {
             'SUPABASE_URL': 'Supabase project URL',
             'SUPABASE_SERVICE_ROLE_KEY': 'Supabase service role key',
-            'SUPABASE_URL': 'Supabase project URL',
-            'SUPABASE_SERVICE_ROLE_KEY': 'Supabase service role key'
         }
         
         missing = []
@@ -78,20 +122,9 @@ class ClassifierWorker:
             logger.error(f"Failed to initialize messaging provider: {e}")
             raise
         
-        # Initialize classifier graph
         self.classifier_graph = create_classifier_graph()
-        
-        # Shutdown flag
-        self.shutdown_requested = False
-        
-        # Register signal handlers
-        signal.signal(signal.SIGTERM, self._handle_shutdown)
-        signal.signal(signal.SIGINT, self._handle_shutdown)
 
-    def _handle_shutdown(self, signum, frame):
-        """Handle shutdown signals."""
-        logger.info(f"Received signal {signum}, scheduling shutdown...")
-        self.shutdown_requested = True
+        logger.info("ClassifierWorker initialized successfully")
     
     @retry(
         stop=stop_after_attempt(3),
@@ -123,6 +156,34 @@ class ClassifierWorker:
         except Exception as e:
             logger.warning(f"Error fetching job: {e}")
             raise
+
+    def fetch_and_lock_specific_job(self, job_id: str) -> Optional[dict]:
+        """Fetch a specific pending classification job by ID and update to 'processing'."""
+        try:
+            result = self.supabase.table('jobs').select('*').eq(
+                'id', job_id
+            ).eq(
+                'status', 'pending'
+            ).limit(1).execute()
+            
+            if not result.data:
+                return None
+            
+            job = result.data[0]
+            
+            # Atomic update
+            update_result = self.supabase.table('jobs').update({
+                'status': 'processing'
+            }).eq('id', job_id).eq('status', 'pending').execute()
+            
+            if update_result.data:
+                logger.info(f"Claimed specific classifier job {job_id}")
+                return job
+            
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching specific classifier job {job_id}: {e}")
+            return None
     
     def classify_and_update(self, job: dict) -> bool:
         """
@@ -232,8 +293,8 @@ class ClassifierWorker:
                  # heuristic: if it looks like a phone number but missing prefix
                  user_phone = f"whatsapp:{user_phone}"
 
-            # Ensure sender is formatted for WhatsApp if recipient is
-            self.messaging.send_message(to=user_phone, body=f"⚠️ {message}")
+            message = self.ERROR_MESSAGES.get(error_category, self.ERROR_MESSAGES['unknown'])
+            self.messaging.send_message(to=user_phone, body=f"\u26a0\ufe0f {message}")
             
             logger.info(f"Sent failure notification to {user_phone} for job {job['id']}")
             
@@ -241,62 +302,4 @@ class ClassifierWorker:
             logger.error(f"Failed to send notification for job {job['id']}: {e}")
             # Don't raise - notification failure shouldn't crash the worker
     
-    def process_one_job(self) -> bool:
-        """
-        Process one job from the queue.
-        
-        Returns:
-            True if a job was processed, False if queue is empty
-        """
-        try:
-            job = self.fetch_and_lock_job()
-            
-            if not job:
-                return False
-            
-            self.classify_and_update(job)
-            return True
-            
-        except Exception as e:
-            logger.error(f"Unexpected error in process_one_job: {e}", exc_info=True)
-            return False
-    
-    def run_loop(self, max_iterations: Optional[int] = None):
-        """
-        Run worker loop to process jobs.
-        
-        Args:
-            max_iterations: Maximum number of iterations (None for infinite)
-        """
-        logger.info(f"Starting worker loop (max_iterations={max_iterations})")
-        iteration = 0
-        
-        while not self.shutdown_requested:
-            if max_iterations and iteration >= max_iterations:
-                logger.info(f"Reached max iterations ({max_iterations}), stopping")
-                break
-            
-            if self.shutdown_requested:
-                logger.info("Shutdown requested, stopping loop")
-                break
-            
-            processed = self.process_one_job()
-            
-            if not processed:
-                # No jobs available, wait before retrying
-                import time
-                logger.debug("No jobs available, sleeping for 5 seconds")
-                time.sleep(5)
-            
-            iteration += 1
 
-
-if __name__ == '__main__':
-    try:
-        worker = ClassifierWorker()
-        worker.run_loop()
-    except KeyboardInterrupt:
-        logger.info("Worker stopped by user")
-    except Exception as e:
-        logger.critical(f"Worker crashed: {e}", exc_info=True)
-        sys.exit(1)

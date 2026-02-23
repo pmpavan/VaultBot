@@ -37,3 +37,6 @@ Pillow>=10.0.0
 trafilatura>=1.6.0
 newspaper4k>=0.9.3
 
+# Story 2.10.1: Worker HTTP Framework Migration
+fastapi>=0.109.2
+uvicorn>=0.27.0

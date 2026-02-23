@@ -1,5 +1,5 @@
 # Use Python 3.14 slim image
-FROM python:3.14-slim
+FROM python:3.11-slim
 
 # Set working directory
 WORKDIR /app
@@ -26,4 +26,4 @@ COPY src/ ./src/
 ENV PYTHONPATH=/app
 
 # Run the classifier worker
-CMD ["python", "src/worker.py"]
+CMD ["sh", "-c", "uvicorn src.worker:app --host 0.0.0.0 --port ${PORT:-8080}"]

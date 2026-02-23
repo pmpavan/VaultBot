@@ -1,6 +1,7 @@
 """
 Article Worker - Processes link jobs and extracts article content.
 Story: 2.5 - Text Article Parser
+Story: 2.10.1 - Worker HTTP Framework Migration
 """
 
 import os
@@ -8,10 +9,14 @@ import sys
 import logging
 import signal
 import json
+import hashlib
+from contextlib import asynccontextmanager
 from typing import Optional, Any
 from supabase import create_client, Client
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from messaging_factory import get_messaging_provider
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 
 # Add src to path for imports
 sys.path.insert(0, os.path.dirname(__file__))
@@ -28,6 +33,51 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Module-level singleton worker — created once at startup, not per-request
+_worker: Optional["ArticleWorker"] = None
+
+
+def _handle_shutdown(signum, frame):
+    """Handle SIGTERM/SIGINT at the module level (runs in main thread)."""
+    logger.info(f"Received signal {signum}, shutting down...")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan: initialise the worker once at container startup."""
+    global _worker
+    signal.signal(signal.SIGTERM, _handle_shutdown)
+    signal.signal(signal.SIGINT, _handle_shutdown)
+    _worker = ArticleWorker()
+    yield
+    _worker = None
+
+
+# FastAPI Application
+app = FastAPI(title="Article Worker", lifespan=lifespan)
+
+
+class ProcessRequest(BaseModel):
+    job_id: str = Field(..., min_length=1, description="The UUID of the job to process")
+
+
+@app.post("/process")
+def process_job(request: ProcessRequest):
+    """Webhook endpoint to process a specific article job."""
+    if _worker is None:
+        raise HTTPException(status_code=503, detail="Worker not initialised")
+    job = _worker.fetch_and_lock_specific_job(request.job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {request.job_id} not found or not in pending state")
+
+    success = _worker.process_job(job)
+    if success:
+        return {"status": "success", "job_id": request.job_id}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to process job")
+
 
 class ArticleWorker:
     """Worker that processes link jobs and extracts article content."""
@@ -58,21 +108,13 @@ class ArticleWorker:
         )
         
         self.messaging = get_messaging_provider()
-        
+
         # Initialize Processor Graph
         self.article_processor = create_article_processor_graph()
         self.normalizer_service = NormalizerService()
         self.summarizer_service = SummarizerService()
-        
-        # Shutdown flag
-        self.shutdown_requested = False
-        signal.signal(signal.SIGTERM, self._handle_shutdown)
-        signal.signal(signal.SIGINT, self._handle_shutdown)
-        
-    def _handle_shutdown(self, signum, frame):
-        """Handle shutdown signals."""
-        logger.info(f"Received signal {signum}, scheduling shutdown...")
-        self.shutdown_requested = True
+
+        logger.info("ArticleWorker initialized successfully")
         
     @retry(
         stop=stop_after_attempt(3),
@@ -114,6 +156,34 @@ class ArticleWorker:
         except Exception as e:
             logger.warning(f"Error fetching job: {e}")
             raise
+
+    def fetch_and_lock_specific_job(self, job_id: str) -> Optional[dict]:
+        """Fetch a specific pending link job by ID and update to 'processing'."""
+        try:
+            result = self.supabase.table('jobs').select('*').eq(
+                'id', job_id
+            ).eq(
+                'status', 'pending'
+            ).limit(1).execute()
+            
+            if not result.data:
+                return None
+            
+            job = result.data[0]
+            
+            # Atomic update
+            update = self.supabase.table('jobs').update({
+                'status': 'processing'
+            }).eq('id', job_id).eq('status', 'pending').execute()
+            
+            if update.data:
+                logger.info(f"Claimed specific article job {job_id}")
+                return job
+                
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching specific article job {job_id}: {e}")
+            return None
 
     def process_job(self, job: dict) -> bool:
         """Process a single job."""
@@ -305,7 +375,7 @@ class ArticleWorker:
         try:
             if not to.startswith('whatsapp:'):
                 to = f"whatsapp:{to}"
-            
+            msg = f"✅ Successfully saved: {title or 'Article'}"
             self.messaging.send_message(to=to, body=msg)
         except Exception as e:
             logger.error(f"Failed to send notification: {e}")
@@ -318,26 +388,4 @@ class ArticleWorker:
          except Exception as e:
              logger.error(f"Failed to mark job failed: {e}")
 
-    def run_loop(self):
-        """Main worker loop."""
-        logger.info("Starting Article Worker loop...")
-        import time
-        while not self.shutdown_requested:
-            processed = False
-            try:
-                job = self.fetch_and_lock_job()
-                if job:
-                    processed = self.process_job(job)
-            except Exception as e:
-                logger.error(f"Loop error: {e}")
-            
-            if not processed:
-                time.sleep(5)
 
-if __name__ == '__main__':
-    try:
-        worker = ArticleWorker()
-        worker.run_loop()
-    except Exception as e:
-        logger.critical(f"Worker crashed: {e}")
-        sys.exit(1)

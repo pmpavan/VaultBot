@@ -1,6 +1,7 @@
 """
 Video Worker - Processes video jobs and extracts content summaries
 Story: 2.3 - Video Frame Extraction
+Story: 2.10.1 - Worker HTTP Framework Migration
 """
 
 import os
@@ -8,11 +9,13 @@ import sys
 import logging
 import signal
 import hashlib
-import time
+from contextlib import asynccontextmanager
 from typing import Optional
 from supabase import create_client, Client
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from messaging_factory import get_messaging_provider
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -29,6 +32,50 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Module-level singleton worker — created once at startup, not per-request
+_worker: Optional["VideoWorker"] = None
+
+
+def _handle_shutdown(signum, frame):
+    """Handle SIGTERM/SIGINT at the module level (runs in main thread)."""
+    logger.info(f"Received signal {signum}, shutting down...")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan: initialise the worker once at container startup."""
+    global _worker
+    signal.signal(signal.SIGTERM, _handle_shutdown)
+    signal.signal(signal.SIGINT, _handle_shutdown)
+    _worker = VideoWorker()
+    yield
+    _worker = None
+
+
+# FastAPI Application
+app = FastAPI(title="Video Worker", lifespan=lifespan)
+
+
+class ProcessRequest(BaseModel):
+    job_id: str = Field(..., min_length=1, description="The UUID of the job to process")
+
+
+@app.post("/process")
+def process_job(request: ProcessRequest):
+    """Webhook endpoint to process a specific video job."""
+    if _worker is None:
+        raise HTTPException(status_code=503, detail="Worker not initialised")
+    job = _worker.fetch_and_lock_specific_job(request.job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {request.job_id} not found or not in pending state")
+
+    success = _worker.process_and_update(job)
+    if success:
+        return {"status": "success", "job_id": request.job_id}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to process job")
 
 
 class VideoWorker:
@@ -84,22 +131,11 @@ class VideoWorker:
             logger.error(f"Failed to initialize messaging provider: {e}")
             raise
         
-        # Initialize video processor graph
         self.video_processor_graph = create_video_processor_graph(num_frames=5)
         self.normalizer_service = NormalizerService()
         self.summarizer_service = SummarizerService()
-        
-        # Shutdown flag
-        self.shutdown_requested = False
-        
-        # Register signal handlers
-        signal.signal(signal.SIGTERM, self._handle_shutdown)
-        signal.signal(signal.SIGINT, self._handle_shutdown)
 
-    def _handle_shutdown(self, signum, frame):
-        """Handle shutdown signals."""
-        logger.info(f"Received signal {signum}, scheduling shutdown...")
-        self.shutdown_requested = True
+        logger.info("VideoWorker initialized successfully")
     
     @retry(
         stop=stop_after_attempt(3),
@@ -145,6 +181,34 @@ class VideoWorker:
         except Exception as e:
             logger.warning(f"Error fetching video job: {e}")
             raise
+
+    def fetch_and_lock_specific_job(self, job_id: str) -> Optional[dict]:
+        """Fetch a specific pending video job by ID and update to 'processing'."""
+        try:
+            result = self.supabase.table('jobs').select('*').eq(
+                'id', job_id
+            ).eq(
+                'status', 'pending'
+            ).limit(1).execute()
+            
+            if not result.data:
+                return None
+            
+            job = result.data[0]
+            
+            # Atomic update
+            update_result = self.supabase.table('jobs').update({
+                'status': 'processing'
+            }).eq('id', job_id).eq('status', 'pending').execute()
+            
+            if update_result.data:
+                logger.info(f"Claimed specific video job {job_id}")
+                return job
+            
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching specific video job {job_id}: {e}")
+            return None
     
     def process_and_update(self, job: dict) -> bool:
         """
@@ -184,9 +248,7 @@ class VideoWorker:
                 'video_url': video_url,
                 'message_id': payload.get('MessageSid', job_id),
                 'auth_token': auth_token,
-                'auth_token': auth_token,
-                'account_sid': os.environ.get('TWILIO_ACCOUNT_SID'), # Pass explicitly or get from messaging service if exposed
-                'video_summary': None,
+                'account_sid': os.environ.get('TWILIO_ACCOUNT_SID'),
                 'video_summary': None,
                 'error': None
             }
@@ -405,62 +467,4 @@ class VideoWorker:
             logger.error(f"Failed to send notification for job {job['id']}: {e}")
             # Don't raise - notification failure shouldn't crash the worker
     
-    def process_one_job(self) -> bool:
-        """
-        Process one video job from the queue.
-        
-        Returns:
-            True if a job was processed, False if queue is empty
-        """
-        try:
-            job = self.fetch_and_lock_video_job()
-            
-            if not job:
-                return False
-            
-            self.process_and_update(job)
-            return True
-            
-        except Exception as e:
-            logger.error(f"Unexpected error in process_one_job: {e}", exc_info=True)
-            return False
-    
-    def run_loop(self, max_iterations: Optional[int] = None):
-        """
-        Run worker loop to process video jobs.
-        
-        Args:
-            max_iterations: Maximum number of iterations (None for infinite)
-        """
-        logger.info(f"Starting video worker loop (max_iterations={max_iterations})")
-        iteration = 0
-        
-        while not self.shutdown_requested:
-            if max_iterations and iteration >= max_iterations:
-                logger.info(f"Reached max iterations ({max_iterations}), stopping")
-                break
-            
-            if self.shutdown_requested:
-                logger.info("Shutdown requested, stopping loop")
-                break
-            
-            processed = self.process_one_job()
-            
-            if not processed:
-                # No jobs available, wait before retrying
-                import time
-                logger.debug("No video jobs available, sleeping for 5 seconds")
-                time.sleep(5)
-            
-            iteration += 1
 
-
-if __name__ == '__main__':
-    try:
-        worker = VideoWorker()
-        worker.run_loop()
-    except KeyboardInterrupt:
-        logger.info("Video worker stopped by user")
-    except Exception as e:
-        logger.critical(f"Video worker crashed: {e}", exc_info=True)
-        sys.exit(1)

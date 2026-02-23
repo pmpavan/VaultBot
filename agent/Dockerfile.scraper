@@ -22,4 +22,4 @@ COPY src/ ./src/
 ENV PYTHONPATH=/app
 
 # Default command
-CMD ["python", "src/scraper_worker.py"]
+CMD ["sh", "-c", "uvicorn src.scraper_worker:app --host 0.0.0.0 --port ${PORT:-8080}"]

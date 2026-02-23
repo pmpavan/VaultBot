@@ -1,6 +1,7 @@
 """
 Scraper Worker - Processes link jobs and extracts metadata
 Story: 2.2 - Universal Link Scraper & Platform Router
+Story: 2.10.1 - Worker HTTP Framework Migration
 """
 
 import os
@@ -8,11 +9,13 @@ import sys
 import logging
 import hashlib
 import signal
-import time
+from contextlib import asynccontextmanager
 from typing import Optional
 from supabase import create_client, Client
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from messaging_factory import get_messaging_provider
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -31,6 +34,51 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Module-level singleton worker — created once at startup, not per-request
+_worker: Optional["ScraperWorker"] = None
+
+
+def _handle_shutdown(signum, frame):
+    """Handle SIGTERM/SIGINT at the module level (runs in main thread)."""
+    logger.info(f"Received signal {signum}, shutting down...")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan: initialise the worker once at container startup."""
+    global _worker
+    signal.signal(signal.SIGTERM, _handle_shutdown)
+    signal.signal(signal.SIGINT, _handle_shutdown)
+    _worker = ScraperWorker()
+    yield
+    # Cleanup (if needed) goes here
+    _worker = None
+
+
+# FastAPI Application
+app = FastAPI(title="Scraper Worker", lifespan=lifespan)
+
+
+class ProcessRequest(BaseModel):
+    job_id: str = Field(..., min_length=1, description="The UUID of the job to process")
+
+
+@app.post("/process")
+def process_job(request: ProcessRequest):
+    """Webhook endpoint to process a specific job."""
+    if _worker is None:
+        raise HTTPException(status_code=503, detail="Worker not initialised")
+    job = _worker.fetch_and_lock_specific_job(request.job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {request.job_id} not found or not in pending state")
+
+    success = _worker.process_and_update(job)
+    if success:
+        return {"status": "success", "job_id": request.job_id}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to process job")
+
 
 class ScraperWorker:
     """Worker that processes link jobs and extracts metadata."""
@@ -47,33 +95,21 @@ class ScraperWorker:
         if not os.environ.get('SUPABASE_URL') or not os.environ.get('SUPABASE_SERVICE_ROLE_KEY'):
             logger.error("Missing required environment variables (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)")
             raise EnvironmentError("Missing required environment variables")
-        
+
         logger.info("Initializing ScraperWorker...")
-        
+
         self.supabase: Client = create_client(
             os.environ.get('SUPABASE_URL'),
             os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
         )
-        
+
         self.messaging = get_messaging_provider()
-        
+
         self.scraper_service = ScraperService()
         self.normalizer_service = NormalizerService()
         self.summarizer_service = SummarizerService()
-        
-        # Shutdown flag
-        self.shutdown_requested = False
-        
-        # Register signal handlers
-        signal.signal(signal.SIGTERM, self._handle_shutdown)
-        signal.signal(signal.SIGINT, self._handle_shutdown)
-        
-        logger.info("ScraperWorker initialized successfully")
 
-    def _handle_shutdown(self, signum, frame):
-        """Handle shutdown signals."""
-        logger.info(f"Received signal {signum}, scheduling shutdown...")
-        self.shutdown_requested = True
+        logger.info("ScraperWorker initialized successfully")
 
     def fetch_and_lock_link_job(self) -> Optional[dict]:
         """Fetch one pending link job and update to 'processing'."""
@@ -106,6 +142,34 @@ class ScraperWorker:
             return None
         except Exception as e:
             logger.error(f"Error fetching link job: {e}")
+            return None
+
+    def fetch_and_lock_specific_job(self, job_id: str) -> Optional[dict]:
+        """Fetch a specific pending link job by ID and update to 'processing'."""
+        try:
+            result = self.supabase.table('jobs').select('*').eq(
+                'id', job_id
+            ).eq(
+                'status', 'pending'
+            ).limit(1).execute()
+            
+            if not result.data:
+                return None
+            
+            job = result.data[0]
+            
+            # Atomic update
+            update_result = self.supabase.table('jobs').update({
+                'status': 'processing'
+            }).eq('id', job_id).eq('status', 'pending').execute()
+            
+            if update_result.data:
+                logger.info(f"Claimed specific link job {job_id}")
+                return job
+            
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching specific link job {job_id}: {e}")
             return None
 
     def process_and_update(self, job: dict) -> bool:
@@ -312,27 +376,4 @@ class ScraperWorker:
         except Exception as e:
             logger.error(f"Failed to notify user of failure: {e}")
 
-    def run_loop(self):
-        logger.info("Scraper worker polling started...")
-        import time
-        while not self.shutdown_requested:
-            try:
-                if self.shutdown_requested:
-                    logger.info("Shutdown requested, stopping loop")
-                    break
-                
-                processed = False
-                job = self.fetch_and_lock_link_job()
-                if job:
-                    self.process_and_update(job)
-                    processed = True
-                
-                if not processed:
-                    time.sleep(5)
-            except Exception as e:
-                logger.error(f"Loop error: {e}")
-                time.sleep(10)
 
-if __name__ == '__main__':
-    worker = ScraperWorker()
-    worker.run_loop()
