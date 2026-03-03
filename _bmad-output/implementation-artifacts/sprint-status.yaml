@@ -65,7 +65,7 @@ development_status:
   # Epic 2.10: Event-Driven Worker Architecture
   epic-2-10: in-progress
   2-10-1-worker-http-framework-migration: done
-  2-10-2-supabase-webhook-triggers: backlog
+  2-10-2-supabase-webhook-triggers: review
   2-10-3-worker-security-dead-letter-fallback: backlog
   epic-2-10-retrospective: optional  # Epic 3: "Ask The Vault" (Search & Recall)
   epic-3: backlog

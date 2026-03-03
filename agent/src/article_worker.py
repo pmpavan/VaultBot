@@ -15,7 +15,7 @@ from typing import Optional, Any
 from supabase import create_client, Client
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from messaging_factory import get_messaging_provider
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel, Field
 
 # Add src to path for imports
@@ -63,8 +63,14 @@ class ProcessRequest(BaseModel):
 
 
 @app.post("/process")
-def process_job(request: ProcessRequest):
+def process_job(request: ProcessRequest, x_vaultbot_worker_secret: Optional[str] = Header(None)):
     """Webhook endpoint to process a specific article job."""
+    # Security check
+    worker_secret = os.environ.get('WORKER_SECRET')
+    if worker_secret and x_vaultbot_worker_secret != worker_secret:
+        logger.warning(f"Unauthorized request with secret: {x_vaultbot_worker_secret}")
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     if _worker is None:
         raise HTTPException(status_code=503, detail="Worker not initialised")
     job = _worker.fetch_and_lock_specific_job(request.job_id)
